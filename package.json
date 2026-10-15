@@ -1,0 +1,11 @@
+{
+  "name": "reach",
+  "version": "0.1.0",
+  "private": true,
+  "description": "How high, and how far, you can get from a place: distance-to-height graphs and drive-time contours.",
+  "type": "module",
+  "scripts": {
+    "start": "node serve.mjs",
+    "test": "node --test"
+  }
+}
