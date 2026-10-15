@@ -15,9 +15,13 @@ export function haversineKm(a, b) {
   return 2 * EARTH_KM * Math.asin(Math.min(1, Math.sqrt(s)));
 }
 
-/** km per degree of longitude at a latitude, and per degree of latitude. */
+/**
+ * km per degree of longitude at a latitude, and per degree of latitude, on the
+ * same sphere as haversineKm so the two always agree.
+ */
 export function kmPerDegree(lat) {
-  return { lon: 111.32 * Math.cos(lat * RAD), lat: 110.574 };
+  const perDeg = EARTH_KM * RAD;
+  return { lon: perDeg * Math.cos(lat * RAD), lat: perDeg };
 }
 
 // ---------- web mercator tiles ----------
@@ -436,4 +440,104 @@ export function csvField(v) {
 export function summitWithin(points, limitKm) {
   const p = atLimit(points, 'km', limitKm);
   return p && p.at ? { ...p.at, metres: p.max } : null;
+}
+
+// ---------- printable terrain ----------
+
+/** The lon/lat box of a square sideKm across, centred on center. */
+export function squareBounds(center, sideKm) {
+  const deg = kmPerDegree(center.lat);
+  const dLon = sideKm / 2 / deg.lon;
+  const dLat = sideKm / 2 / deg.lat;
+  return { west: center.lon - dLon, east: center.lon + dLon, south: center.lat - dLat, north: center.lat + dLat };
+}
+
+/** The zoom whose pixels are at least as fine as the model's grid, within a tile budget. */
+export function printZoom(center, sideKm, cells, maxTiles = 64) {
+  const want = (sideKm * 1000) / cells;
+  let z = 3;
+  while (z < 14 && pixelMetres(center.lat, z + 1) >= want * 0.5) z++;
+  while (z > 3 && tilesForRadius(center, sideKm * 0.71, z).length > maxTiles) z--;
+  return z;
+}
+
+/**
+ * Scales a height grid to millimetres: the model is widthMm across, the base
+ * slab is baseMm thick under the lowest point, and heights are stretched by
+ * exaggeration. Sea floor is cut to sea level when clampSea is set.
+ */
+export function printHeights(heights, { sideKm, widthMm, exaggeration = 1, baseMm = 3, clampSea = true }) {
+  const metres = clampSea ? heights.map((h) => Math.max(0, h)) : heights;
+  let lo = Infinity, hi = -Infinity;
+  for (const h of metres) { if (h < lo) lo = h; if (h > hi) hi = h; }
+  const mmPerMetre = widthMm / (sideKm * 1000);
+  const mm = metres.map((h) => baseMm + (h - lo) * mmPerMetre * exaggeration);
+  return { mm, lowM: lo, highM: hi, reliefMm: (hi - lo) * mmPerMetre * exaggeration, mmPerMetre };
+}
+
+/**
+ * A closed, printable binary STL of an n x n height grid (row 0 north): the
+ * terrain on top, four walls down to z = 0, and a bottom fanned from its centre.
+ * Every edge is shared by exactly two triangles, so slicers take it as solid.
+ */
+export function terrainStl(zMm, n, widthMm) {
+  const step = widthMm / (n - 1);
+  const X = (i) => i * step;
+  const Y = (j) => (n - 1 - j) * step; // north is +y
+  const Z = (i, j) => zMm[j * n + i];
+  const tris = [];
+  const tri = (a, b, c) => tris.push(a, b, c);
+  // top, counter-clockwise seen from above
+  for (let j = 0; j < n - 1; j++) {
+    for (let i = 0; i < n - 1; i++) {
+      const a = [X(i), Y(j), Z(i, j)], b = [X(i + 1), Y(j), Z(i + 1, j)];
+      const c = [X(i), Y(j + 1), Z(i, j + 1)], d = [X(i + 1), Y(j + 1), Z(i + 1, j + 1)];
+      tri(a, c, b);
+      tri(b, c, d);
+    }
+  }
+  // the perimeter, walked counter-clockwise from above: south edge west to east, east edge, north edge, west edge
+  const ring = [];
+  for (let i = 0; i < n - 1; i++) ring.push([i, n - 1]);
+  for (let j = n - 1; j > 0; j--) ring.push([n - 1, j]);
+  for (let i = n - 1; i > 0; i--) ring.push([i, 0]);
+  for (let j = 0; j < n - 1; j++) ring.push([0, j]);
+  const centre = [widthMm / 2, widthMm / 2, 0];
+  for (let k = 0; k < ring.length; k++) {
+    const [i0, j0] = ring[k];
+    const [i1, j1] = ring[(k + 1) % ring.length];
+    const top0 = [X(i0), Y(j0), Z(i0, j0)], top1 = [X(i1), Y(j1), Z(i1, j1)];
+    const bot0 = [X(i0), Y(j0), 0], bot1 = [X(i1), Y(j1), 0];
+    tri(bot0, bot1, top1); // wall, facing outward
+    tri(bot0, top1, top0);
+    tri(centre, bot1, bot0); // bottom, facing down
+  }
+  const count = tris.length / 3;
+  const buf = new ArrayBuffer(84 + count * 50);
+  const view = new DataView(buf);
+  const header = 'Reach terrain STL';
+  for (let k = 0; k < header.length; k++) view.setUint8(k, header.charCodeAt(k));
+  view.setUint32(80, count, true);
+  let o = 84;
+  for (let t = 0; t < count; t++) {
+    const [a, b, c] = [tris[t * 3], tris[t * 3 + 1], tris[t * 3 + 2]];
+    const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    const nx = u[1] * v[2] - u[2] * v[1], ny = u[2] * v[0] - u[0] * v[2], nz = u[0] * v[1] - u[1] * v[0];
+    const len = Math.hypot(nx, ny, nz) || 1;
+    for (const val of [nx / len, ny / len, nz / len, ...a, ...b, ...c]) { view.setFloat32(o, val, true); o += 4; }
+    o += 2; // attribute byte count
+  }
+  return buf;
+}
+
+/** Reads a binary STL back into triangles, for tests and the preview. */
+export function readStl(buf) {
+  const view = new DataView(buf);
+  const count = view.getUint32(80, true);
+  const tris = [];
+  for (let t = 0, o = 84; t < count; t++, o += 50) {
+    const f = (k) => view.getFloat32(o + k * 4, true);
+    tris.push({ normal: [f(0), f(1), f(2)], v: [[f(3), f(4), f(5)], [f(6), f(7), f(8)], [f(9), f(10), f(11)]] });
+  }
+  return tris;
 }

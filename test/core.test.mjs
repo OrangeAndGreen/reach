@@ -201,3 +201,52 @@ test('despike removes lone glitches and keeps real peaks', () => {
   ]);
   assert.deepEqual(Array.from(core.despike(mountain, size)), Array.from(mountain));
 });
+
+test('square bounds are sideKm across', () => {
+  const b = core.squareBounds(boston, 20);
+  near(core.haversineKm({ lat: boston.lat, lon: b.west }, { lat: boston.lat, lon: b.east }), 20, 0.1);
+  near(core.haversineKm({ lat: b.south, lon: boston.lon }, { lat: b.north, lon: boston.lon }), 20, 0.1);
+});
+
+test('print zoom is fine enough for the grid and within budget', () => {
+  const z = core.printZoom(boston, 20, 200);
+  assert.ok(core.pixelMetres(boston.lat, z) <= 200);
+  assert.ok(core.tilesForRadius(boston, 20 * 0.71, z).length <= 64);
+  assert.ok(core.printZoom(boston, 200, 200) < z);
+});
+
+test('print heights scale to millimetres over a base', () => {
+  const p = core.printHeights([-20, 0, 500, 1000], { sideKm: 10, widthMm: 100, exaggeration: 2, baseMm: 3 });
+  assert.equal(p.lowM, 0);
+  assert.equal(p.highM, 1000);
+  assert.deepEqual(p.mm, [3, 3, 13, 23]); // 100 mm / 10 km = 0.01 mm per m, doubled
+  near(p.reliefMm, 20, 1e-9);
+});
+
+test('terrain STL is closed: every edge shared by exactly two triangles', () => {
+  const n = 5;
+  const z = Array.from({ length: n * n }, (_, k) => 3 + (k % 7));
+  const tris = core.readStl(core.terrainStl(z, n, 50));
+  assert.equal(tris.length, 2 * (n - 1) ** 2 + 3 * 4 * (n - 1));
+  const edges = new Map();
+  const key = (p) => p.map((v) => v.toFixed(3)).join(',');
+  for (const t of tris) {
+    for (let k = 0; k < 3; k++) {
+      const a = key(t.v[k]), b = key(t.v[(k + 1) % 3]);
+      const e = a < b ? `${a}|${b}` : `${b}|${a}`;
+      edges.set(e, (edges.get(e) || 0) + 1);
+    }
+  }
+  assert.ok([...edges.values()].every((c) => c === 2));
+  // and consistently wound: each directed edge appears once
+  const directed = new Set();
+  for (const t of tris) for (let k = 0; k < 3; k++) directed.add(`${key(t.v[k])}>${key(t.v[(k + 1) % 3])}`);
+  assert.equal(directed.size, tris.length * 3);
+});
+
+test('terrain STL faces outward: top normals point up, bottom down', () => {
+  const n = 3;
+  const tris = core.readStl(core.terrainStl(new Array(n * n).fill(5), n, 10));
+  assert.ok(tris.slice(0, 8).every((t) => t.normal[2] > 0.99));
+  assert.ok(tris.filter((t) => t.v.every((p) => p[2] === 0)).every((t) => t.normal[2] < -0.99));
+});

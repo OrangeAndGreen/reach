@@ -30,6 +30,7 @@ function saveSettings() {
       radius: state.radius,
       places: state.places.map(({ name, lat, lon, slot }) => ({ name, lat, lon, slot })),
       origin: state.origin,
+      print: state.print,
       limits: $('limits').value,
       detail: $('detail').value,
     }));
@@ -49,6 +50,8 @@ const state = {
   origin: saved.origin || { name: 'Boston, Massachusetts', lat: 42.3601, lon: -71.0589 },
   drive: null,
   driveMeasure: 'far',
+  print: saved.print || { name: 'Mount Washington, New Hampshire', lat: 44.2706, lon: -71.3033 },
+  model: null,
   busy: false,
 };
 if (saved.limits) $('limits').value = saved.limits;
@@ -72,13 +75,15 @@ map.attributionControl.addAttribution('Elevation: Mapzen Terrain Tiles on AWS ·
 const heightLayer = L.layerGroup().addTo(map);
 const hoverLayer = L.layerGroup().addTo(map);
 const driveLayer = L.layerGroup();
+const printLayer = L.layerGroup();
 
 map.on('click', async (e) => {
   const lat = e.latlng.lat;
   const lon = ((e.latlng.lng + 540) % 360) - 180;
   const name = await placeName(lat, lon);
   if (state.tab === 'height') addPlace({ name, lat, lon });
-  else setOrigin({ name, lat, lon });
+  else if (state.tab === 'drive') setOrigin({ name, lat, lon });
+  else setPrintCentre({ name, lat, lon });
 });
 
 async function placeName(lat, lon) {
@@ -100,19 +105,20 @@ async function placeName(lat, lon) {
 function setTab(tab) {
   state.tab = tab;
   for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
-  $('pane-height').hidden = tab !== 'height';
-  $('pane-drive').hidden = tab !== 'drive';
+  for (const t of ['height', 'drive', 'print']) $(`pane-${t}`).hidden = tab !== t;
+  for (const layer of [heightLayer, hoverLayer, driveLayer, printLayer]) map.removeLayer(layer);
   if (tab === 'height') {
-    map.removeLayer(driveLayer);
     heightLayer.addTo(map);
     hoverLayer.addTo(map);
     fitPlaces();
-  } else {
-    map.removeLayer(heightLayer);
-    map.removeLayer(hoverLayer);
+  } else if (tab === 'drive') {
     driveLayer.addTo(map);
     drawDrive();
     fitDrive();
+  } else {
+    printLayer.addTo(map);
+    drawPrintSquare(true);
+    if (!state.model) buildModel();
   }
   saveSettings();
 }
@@ -124,6 +130,7 @@ function setUnits(units) {
   for (const o of $('radius').options) o.textContent = core.formatDistance(Number(o.value), units).replace(/\.0 /, ' ');
   renderHeight();
   renderDrive();
+  renderPrintTable();
   saveSettings();
 }
 document.querySelectorAll('.units button').forEach((b) => b.addEventListener('click', () => setUnits(b.dataset.units)));
@@ -633,6 +640,180 @@ $('drive-kml').addEventListener('click', () => {
   download(`reach-drive-${slug}.kml`, kml, 'application/vnd.google-earth.kml+xml');
 });
 
+// ---------- print tool ----------
+
+function printSettings() {
+  return {
+    sideKm: Number($('print-side').value),
+    widthMm: Number($('print-width').value),
+    cells: Number($('print-cells').value),
+    exaggeration: Number($('print-exag').value),
+    baseMm: Number($('print-base').value),
+  };
+}
+
+function setPrintCentre(place) {
+  state.print = place;
+  saveSettings();
+  drawPrintSquare(true);
+  buildModel();
+}
+
+function drawPrintSquare(fit) {
+  printLayer.clearLayers();
+  $('print-name').textContent = `Centred on ${state.print.name}.`;
+  const b = core.squareBounds(state.print, Number($('print-side').value));
+  const rect = L.rectangle([[b.south, b.west], [b.north, b.east]], { color: cssVar('--accent'), weight: 2, fill: false, interactive: false });
+  rect.addTo(printLayer);
+  if (fit) map.fitBounds(rect.getBounds().pad(0.6));
+}
+
+/** Elevation at fractional global pixel coordinates, bilinear across tile edges. */
+function sampler(tiles, z) {
+  const n = 2 ** z;
+  const get = (gx, gy) => {
+    const tx = Math.floor(gx / 256), ty = Math.floor(gy / 256);
+    const t = tiles.get(`${z}/${((tx % n) + n) % n}/${ty}`);
+    if (!t) return 0;
+    return t[(gy - ty * 256) * 256 + (gx - tx * 256)];
+  };
+  return (fx, fy) => {
+    const x0 = Math.floor(fx - 0.5), y0 = Math.floor(fy - 0.5);
+    const tx = fx - 0.5 - x0, ty = fy - 0.5 - y0;
+    return get(x0, y0) * (1 - tx) * (1 - ty) + get(x0 + 1, y0) * tx * (1 - ty) +
+      get(x0, y0 + 1) * (1 - tx) * ty + get(x0 + 1, y0 + 1) * tx * ty;
+  };
+}
+
+let modelRun = 0;
+async function buildModel() {
+  const run = ++modelRun;
+  const set = printSettings();
+  const centre = state.print;
+  $('print-run').disabled = true;
+  try {
+    const z = core.printZoom(centre, set.sideKm, set.cells);
+    const list = core.tilesForRadius(centre, set.sideKm * 0.71, z);
+    const tiles = new Map();
+    let done = 0;
+    await Promise.all(list.map(async (t) => {
+      tiles.set(`${t.z}/${t.x}/${t.y}`, await elevationTile(t.z, t.x, t.y));
+      if (run === modelRun) progress('print', `Reading the terrain: tile ${++done} of ${list.length}`, done / list.length);
+    }));
+    if (run !== modelRun) return;
+    const b = core.squareBounds(centre, set.sideKm);
+    const at = sampler(tiles, z);
+    const n = set.cells;
+    const heights = new Array(n * n);
+    for (let j = 0; j < n; j++) {
+      const lat = b.north - (j / (n - 1)) * (b.north - b.south);
+      for (let i = 0; i < n; i++) {
+        const lon = b.west + (i / (n - 1)) * (b.east - b.west);
+        const p = core.lonLatToTile(lon, lat, z);
+        heights[j * n + i] = at(p.x * 256, p.y * 256);
+      }
+    }
+    const scaled = core.printHeights(heights, set);
+    const stl = core.terrainStl(scaled.mm, n, set.widthMm);
+    state.model = { stl, scaled, set, centre, pixel: core.pixelMetres(centre.lat, z) };
+    showModel();
+    status('print', `Terrain read at ${Math.round(state.model.pixel)} m per pixel and sampled on a ${n} × ${n} grid.`);
+    $('print-stl').disabled = false;
+  } catch (err) {
+    status('print', `Couldn't build the model (${err.message}).`, true);
+  } finally {
+    if (run === modelRun) $('print-run').disabled = false;
+  }
+}
+$('print-run').addEventListener('click', buildModel);
+$('print-side').addEventListener('change', () => { drawPrintSquare(true); buildModel(); });
+$('print-exag').addEventListener('input', () => { $('print-exag-value').textContent = `× ${$('print-exag').value}`; });
+$('print-exag').addEventListener('change', buildModel);
+for (const id of ['print-width', 'print-cells', 'print-base']) $(id).addEventListener('change', buildModel);
+$('print-exag-value').textContent = `× ${$('print-exag').value}`;
+
+let viewer = null;
+function showModel() {
+  const m = state.model;
+  const el = $('print-preview');
+  if (!window.THREE) {
+    el.innerHTML = '<div class="empty">The 3D preview needs three.js, which did not load.</div>';
+    renderPrintTable();
+    return;
+  }
+  if (!viewer) {
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+    el.innerHTML = '';
+    el.append(renderer.domElement);
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(35, 1, 1, 5000);
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x445544, 0.55));
+    const sun = new THREE.DirectionalLight(0xffffff, 0.85);
+    sun.position.set(-1, 1.2, -1.4); // low from the north-west, like a shaded relief map
+    scene.add(sun);
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    viewer = { renderer, scene, camera, controls, mesh: null };
+    const size = () => {
+      const w = el.clientWidth || 300, h = el.clientHeight || 300;
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    };
+    new ResizeObserver(size).observe(el);
+    size();
+    const loop = () => { controls.update(); renderer.render(scene, camera); requestAnimationFrame(loop); };
+    loop();
+  }
+  const view = new DataView(m.stl);
+  const count = view.getUint32(80, true);
+  const pos = new Float32Array(count * 9);
+  const nrm = new Float32Array(count * 9);
+  for (let t = 0, o = 84; t < count; t++, o += 50) {
+    for (let k = 0; k < 9; k++) pos[t * 9 + k] = view.getFloat32(o + 12 + k * 4, true);
+    for (let v = 0; v < 3; v++) for (let k = 0; k < 3; k++) nrm[t * 9 + v * 3 + k] = view.getFloat32(o + k * 4, true);
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geom.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  geom.rotateX(-Math.PI / 2); // STL is z-up, three is y-up: north (+y) becomes -z, away from the camera
+  geom.translate(-m.set.widthMm / 2, 0, m.set.widthMm / 2);
+  if (viewer.mesh) { viewer.scene.remove(viewer.mesh); viewer.mesh.geometry.dispose(); }
+  viewer.mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ color: 0xc9b79c, roughness: 0.85, metalness: 0 }));
+  viewer.scene.add(viewer.mesh);
+  const w = m.set.widthMm;
+  viewer.camera.position.set(0, w * 0.95, w * 1.35);
+  viewer.controls.target.set(0, m.set.baseMm + m.scaled.reliefMm / 3, 0);
+  viewer.controls.update();
+  renderPrintTable();
+}
+
+function renderPrintTable() {
+  const m = state.model;
+  if (!m) { $('print-table').innerHTML = ''; return; }
+  const { set, scaled } = m;
+  const tallMm = set.baseMm + scaled.reliefMm;
+  const scale = Math.round((set.sideKm * 1e6) / set.widthMm);
+  const rows = [
+    ['Ground covered', `${core.formatDistance(set.sideKm, state.units)} square`],
+    ['Model', `${set.widthMm} × ${set.widthMm} × ${tallMm.toFixed(1)} mm`],
+    ['Lowest to highest', `${core.formatHeight(scaled.lowM, state.units)} to ${core.formatHeight(scaled.highM, state.units)}`],
+    ['Map scale', `1 : ${scale.toLocaleString('en-US')}`],
+    ['Height stretch', `× ${set.exaggeration}, so 1 mm of model is ${core.formatHeight(1 / (scaled.mmPerMetre * set.exaggeration), state.units)}`],
+    ['STL', `${(m.stl.byteLength / 1048576).toFixed(1)} MB, ${new DataView(m.stl).getUint32(80, true).toLocaleString('en-US')} triangles`],
+  ];
+  $('print-table').innerHTML = `<tbody>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</tbody>`;
+}
+
+$('print-stl').addEventListener('click', () => {
+  const m = state.model;
+  if (!m) return;
+  const slug = m.centre.name.split(',')[0].toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  download(`reach-${slug}-${m.set.sideKm}km.stl`, m.stl, 'model/stl');
+});
+
+
 // ---------- small helpers ----------
 
 function status(which, text, error = false) {
@@ -674,6 +855,7 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { re
 
 searchBox('place-search', 'place-results', addPlace);
 searchBox('origin-search', 'origin-results', setOrigin);
+searchBox('print-search', 'print-results', setPrintCentre);
 setUnits(state.units);
 setTab(state.tab);
 measure();

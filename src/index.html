@@ -11,6 +11,8 @@
 <link rel="stylesheet" href="style.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 </head>
 <body>
 <header class="bar">
@@ -21,6 +23,7 @@
   <nav class="tabs" role="tablist">
     <button id="tab-height" role="tab" aria-selected="true" data-tab="height">Height</button>
     <button id="tab-drive" role="tab" aria-selected="false" data-tab="drive">Drive</button>
+    <button id="tab-print" role="tab" aria-selected="false" data-tab="print">Print</button>
   </nav>
   <div class="units" role="group" aria-label="Units">
     <button id="units-metric" data-units="metric" aria-pressed="true">km · m</button>
@@ -133,6 +136,80 @@
         <button id="drive-kml">Download KML</button>
       </div>
       <p class="hint">Road times come from the public OSRM demo server, so a run goes in polite batches. Times are free-flow driving with no traffic or stops.</p>
+    </div>
+
+    <!-- Print: a square of terrain as a solid STL for the 3D printer -->
+    <div id="pane-print" class="pane" hidden>
+      <h1>Print a piece of the planet</h1>
+      <p class="lede">A square of real terrain as a closed STL, ready for the slicer. Pick the middle on the map, choose its size, and stretch the heights if the land is flat.</p>
+
+      <div class="field">
+        <label for="print-search">Centre</label>
+        <div class="search">
+          <input id="print-search" type="search" placeholder="Search a peak, town or park" autocomplete="off">
+          <ul id="print-results" class="results" hidden></ul>
+        </div>
+        <p class="hint">Or click the map while this tab is open. <span id="print-name" class="origin"></span></p>
+      </div>
+
+      <div class="row">
+        <div class="field">
+          <label for="print-side">Square</label>
+          <select id="print-side">
+            <option value="2">2 km</option>
+            <option value="5">5 km</option>
+            <option value="10">10 km</option>
+            <option value="20" selected>20 km</option>
+            <option value="40">40 km</option>
+            <option value="80">80 km</option>
+            <option value="160">160 km</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="print-width">Model width</label>
+          <select id="print-width">
+            <option value="80">80 mm</option>
+            <option value="120" selected>120 mm</option>
+            <option value="180">180 mm</option>
+            <option value="250">250 mm</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="print-cells">Detail</label>
+          <select id="print-cells">
+            <option value="120">120 × 120</option>
+            <option value="200" selected>200 × 200</option>
+            <option value="300">300 × 300</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="print-exag">Height stretch <span id="print-exag-value"></span></label>
+          <input id="print-exag" type="range" min="1" max="5" step="0.25" value="1.5">
+        </div>
+        <div class="field">
+          <label for="print-base">Base</label>
+          <select id="print-base">
+            <option value="2">2 mm</option>
+            <option value="3" selected>3 mm</option>
+            <option value="5">5 mm</option>
+          </select>
+        </div>
+        <button id="print-run" class="primary">Build model</button>
+      </div>
+      <div id="print-status" class="status" aria-live="polite"></div>
+
+      <figure class="chart-wrap">
+        <figcaption>Preview <span class="hint">(drag to turn, scroll to zoom)</span></figcaption>
+        <div id="print-preview" class="preview"></div>
+      </figure>
+      <div class="table-wrap">
+        <table id="print-table"></table>
+      </div>
+      <div class="actions">
+        <button id="print-stl" disabled>Download STL</button>
+      </div>
     </div>
   </section>
 
