@@ -11,8 +11,9 @@ Three tools on one map:
   with a graph of how far, and how much ground, each extra hour buys. **Find
   the high ground** then reads the tallest point inside each band. **Download
   KML** saves the bands and their placemarks for Google Earth.
-- **Print**: a square of real terrain (2 to 160 km across) as a closed binary
-  STL for the slicer. Choose the model width, the detail, a height stretch and
+- **Print**: a square of real terrain (0.5 to 160 km across) as a closed binary
+  STL for the slicer. On squares of 2 km or less it can raise the buildings
+  from OpenStreetMap too. Choose the model width, the detail, a height stretch and
   the base thickness, and whether the sea floor comes too (down to 50 m, 200 m,
   1,000 m or all the way, with its own depth stretch). A preview you can turn shows the model, beside its real
   dimensions and scale. The default is the 20 km around Mt Washington:
@@ -58,6 +59,7 @@ ES modules, which is why it needs the little server rather than file://.
 | Road times | OSRM public demo server, `table` service | fair use: a run is 4 to 11 calls of 300 points, 0.7 s apart, and is cached in the browser |
 | Place search | Open-Meteo geocoding | the same service Goldilocks uses |
 | Map click names | Nominatim reverse geocoding | one call per click |
+| Buildings | OpenStreetMap through the Overpass API | one call per print square, kept for the session; © OpenStreetMap contributors, ODbL |
 
 - **Height** reads every DEM pixel within the radius at the most detailed zoom
   that stays under 160 tiles. Then it re-reads each step of the
@@ -95,6 +97,28 @@ ES modules, which is why it needs the little server rather than file://.
   (Oslofjord is about -5 m). The mesh is the terrain, four walls and
   a bottom fanned from its centre. A test checks that every edge is shared by
   exactly two triangles and wound consistently, so it is watertight.
+- **Buildings.** Each footprint becomes its own closed solid, from just under
+  the terrain beneath it up to its ground plus its height, at the land's height
+  stretch. The height is OSM's `height`, or its floors (`building:levels` plus
+  `roof:levels`) at 3 m each, or the chosen default where it has neither (about
+  9% of buildings in Manhattan, 18% in Sunny Isles Beach). Courtyards stay open, outlines are cut at
+  the square's edge, and an outline too broken to close (crossing itself,
+  courtyards touching it) prints as itself without courtyards, or failing that
+  as its convex hull. Footprints under 0.4 mm² on the model are left out. Roofs on posts
+  (`building=roof`) and underground buildings are skipped. A 2 km square of
+  Manhattan is about 3,000 buildings and a 9 MB STL.
+- **Buildings already in the elevation data.** Mostly they aren't: at the
+  print zooms the tiles are bare earth under the buildings OSM maps in
+  Manhattan, Sunny Isles Beach, Midtown Miami and Dubai Marina. The tall
+  readings in Height's Miami run are structures OSM doesn't map and elevated
+  roads. A building's ground is therefore the terrain under its own footprint.
+  Two checks catch the exceptions. One building standing more than 4 m (and
+  40% of its height) above nearly everything around it is in the data, and
+  the ground under it is lowered to the ground around it. And where the tiles
+  are a surface model for the whole city, as SRTM is, the ground under the
+  buildings stands well above the open ground near them: 8 m in Mong Kok and
+  5 m on São Paulo's Avenida Paulista, against 0.2 m in Manhattan. Over 4 m,
+  the Print tab says the land will print lumpy under the buildings.
 - OSRM times are free-flow with no traffic or stops, and its car speeds are
   conservative. Boston's 12-hour line lands short of where a real day's drive
   ends.
@@ -108,3 +132,5 @@ ES modules, which is why it needs the little server rather than file://.
 - `src/chart.js`: the SVG line chart (d3 scales, crosshair tooltip, direct
   labels).
 - `src/app.js`: the page. Map, search, tile loading, OSRM batches, exports.
+- `src/earcut.js`: Mapbox's earcut 3.0.1 (ISC), vendored unchanged, which
+  triangulates building roofs and floors.
