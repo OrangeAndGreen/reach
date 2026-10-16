@@ -16,10 +16,10 @@ Three tools on one map:
   from OpenStreetMap too. Choose the model width, the detail, a height stretch and
   the base thickness, and whether the sea floor comes too (down to 50 m, 200 m,
   1,000 m or all the way, with its own depth stretch), and whether to mark the
-  shoreline with a groove or a ridge (0.4 or 0.8 mm) to paint or just to see the coast by. A preview you can turn shows the model, beside its real
+  shoreline with a groove or a ridge (0.4 or 0.8 mm) to paint or just to see the coast by. It can also cut a label 0.6 mm up into the underside, mirrored so it reads when you turn the print over: the centre's coordinates, the ground covered and the height stretch (and the depth stretch, when the sea floor has its own). A preview you can turn shows the model, beside its real
   dimensions and scale. The default is the 20 km around Mt Washington:
   120 × 120 × 17.6 mm at ×1.5. **Download KML** saves the square for Google
-  Earth along with every setting (centre, size, width, detail, stretch, base, sea floor, shoreline)
+  Earth along with every setting (centre, size, width, detail, stretch, base, sea floor, shoreline, label)
   and what came of them (tile zoom, metres per pixel, lowest and highest point,
   model height, scale, triangle count, STL file name). **Open KML** reads one
   back and builds the same STL again. **Download map image** saves the map

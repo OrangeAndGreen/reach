@@ -609,6 +609,7 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ['depthStretch', 'Depth stretch (x)', set.depthStretch ?? set.exaggeration],
     ['shoreMm', 'Shoreline line size (mm, 0 for none)', set.shoreMm ?? 0],
     ['shoreRidge', 'Shoreline as a ridge (1) or a groove (0)', set.shoreRidge ? 1 : 0],
+    ['bottomLabel', 'Label cut into the underside (1 yes, 0 no)', set.label ? 1 : 0],
     ['buildings', 'Buildings from OpenStreetMap (1 yes, 0 no)', set.buildings ? 1 : 0],
     ['buildingDefaultM', 'Building height where OSM has none (m)', set.buildingDefaultM ?? DEFAULT_BUILDING_M],
   ];
@@ -638,6 +639,13 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
       ['metresPerMmVertical', 'Metres of ground per mm of model height', +vertical.toFixed(2)],
       ['triangles', 'STL triangles', model.triangles],
     );
+    if (model.label?.depthMm) {
+      derived.push(
+        ['labelText', 'Label text', model.label.lines.join(' / ')],
+        ['labelLetterMm', 'Label letter height (mm)', +(model.label.pxMm * 7).toFixed(2)],
+        ['labelDepthMm', 'Label depth (mm)', +model.label.depthMm.toFixed(2)],
+      );
+    }
     if (model.buildings) {
       const b = model.buildings;
       derived.push(
@@ -715,6 +723,8 @@ export function parsePrintKml(text) {
       // files from before the shoreline have none
       shoreMm: values.shoreMm == null ? 0 : num('shoreMm', 0, 10),
       shoreRidge: values.shoreRidge === '1',
+      // files from before the label have none
+      label: values.bottomLabel === '1',
       // files from before buildings have none
       buildings: values.buildings === '1',
       buildingDefaultM: values.buildingDefaultM == null ? DEFAULT_BUILDING_M : num('buildingDefaultM', 1, 100),
@@ -775,14 +785,193 @@ export function markShore(mm, shore, sizeMm, ridge = false, minMm = 0.6) {
   return mm.map((z, k) => (!shore[k] ? z : ridge ? z + sizeMm : Math.max(Math.min(z, minMm), z - sizeMm)));
 }
 
+// ---------- the label under a print ----------
+
+/** A 5 x 7 block font for the label, '#' for ink and row 0 at the top. Narrow glyphs are narrow strings. */
+const FONT = {
+  ' ': ['...', '...', '...', '...', '...', '...', '...'],
+  '.': ['..', '..', '..', '..', '..', '##', '##'],
+  '-': ['...', '...', '...', '###', '...', '...', '...'],
+  ':': ['..', '##', '##', '..', '##', '##', '..'],
+  '°': ['###', '#.#', '###', '...', '...', '...', '...'],
+  '×': ['.....', '#...#', '.#.#.', '..#..', '.#.#.', '#...#', '.....'],
+  0: ['.###.', '#...#', '#..##', '#.#.#', '##..#', '#...#', '.###.'],
+  1: ['..#..', '.##..', '..#..', '..#..', '..#..', '..#..', '.###.'],
+  2: ['.###.', '#...#', '....#', '...#.', '..#..', '.#...', '#####'],
+  3: ['#####', '...#.', '..#..', '...#.', '....#', '#...#', '.###.'],
+  4: ['...#.', '..##.', '.#.#.', '#..#.', '#####', '...#.', '...#.'],
+  5: ['#####', '#....', '####.', '....#', '....#', '#...#', '.###.'],
+  6: ['..##.', '.#...', '#....', '####.', '#...#', '#...#', '.###.'],
+  7: ['#####', '....#', '...#.', '..#..', '.#...', '.#...', '.#...'],
+  8: ['.###.', '#...#', '#...#', '.###.', '#...#', '#...#', '.###.'],
+  9: ['.###.', '#...#', '#...#', '.####', '....#', '...#.', '.##..'],
+  A: ['.###.', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
+  B: ['####.', '#...#', '#...#', '####.', '#...#', '#...#', '####.'],
+  C: ['.###.', '#...#', '#....', '#....', '#....', '#...#', '.###.'],
+  D: ['####.', '#...#', '#...#', '#...#', '#...#', '#...#', '####.'],
+  E: ['#####', '#....', '#....', '####.', '#....', '#....', '#####'],
+  F: ['#####', '#....', '#....', '####.', '#....', '#....', '#....'],
+  G: ['.###.', '#...#', '#....', '#.###', '#...#', '#...#', '.####'],
+  H: ['#...#', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
+  I: ['###', '.#.', '.#.', '.#.', '.#.', '.#.', '###'],
+  J: ['..###', '...#.', '...#.', '...#.', '...#.', '#..#.', '.##..'],
+  K: ['#...#', '#..#.', '#.#..', '##...', '#.#..', '#..#.', '#...#'],
+  L: ['#....', '#....', '#....', '#....', '#....', '#....', '#####'],
+  M: ['#...#', '##.##', '#.#.#', '#.#.#', '#...#', '#...#', '#...#'],
+  N: ['#...#', '#...#', '##..#', '#.#.#', '#..##', '#...#', '#...#'],
+  O: ['.###.', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
+  P: ['####.', '#...#', '#...#', '####.', '#....', '#....', '#....'],
+  Q: ['.###.', '#...#', '#...#', '#...#', '#.#.#', '#..#.', '.##.#'],
+  R: ['####.', '#...#', '#...#', '####.', '#.#..', '#..#.', '#...#'],
+  S: ['.####', '#....', '#....', '.###.', '....#', '....#', '####.'],
+  T: ['#####', '..#..', '..#..', '..#..', '..#..', '..#..', '..#..'],
+  U: ['#...#', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
+  V: ['#...#', '#...#', '#...#', '#...#', '#...#', '.#.#.', '..#..'],
+  W: ['#...#', '#...#', '#...#', '#.#.#', '#.#.#', '#.#.#', '.#.#.'],
+  X: ['#...#', '#...#', '.#.#.', '..#..', '.#.#.', '#...#', '#...#'],
+  Y: ['#...#', '#...#', '.#.#.', '..#..', '..#..', '..#..', '..#..'],
+  Z: ['#####', '....#', '...#.', '..#..', '.#...', '#....', '#####'],
+};
+
+/** How deep the letters are cut into the underside, and the least model left over them (mm). */
+export const LABEL_DEPTH_MM = 0.6;
+export const LABEL_ROOF_MM = 0.6;
+/** The size of one font pixel on the model (mm): under the least, the strokes are too fine to print. */
+const LABEL_MAX_PX = 1;
+const LABEL_MIN_PX = 0.5;
+
+/**
+ * What the label under a print says: the centre, the ground covered, and the
+ * height stretch, with the depth stretch when the sea floor has its own.
+ */
+export function labelLines(centre, set) {
+  const deg = (v, pos, neg) => `${Math.abs(v).toFixed(4)}°${v >= 0 ? pos : neg}`;
+  const lines = [`${deg(centre.lat, 'N', 'S')} ${deg(centre.lon, 'E', 'W')}`, `${set.sideKm} × ${set.sideKm} KM`, `VERTICAL ×${set.exaggeration}`];
+  if (set.seaFloorM > 0 && set.depthStretch !== set.exaggeration) lines.push(`DEPTH ×${set.depthStretch}`);
+  return lines;
+}
+
+/**
+ * Lines of text as an ink grid (row 0 at the top), each line centred with two
+ * font pixels between lines, at two cells to the font pixel. Two pixels of a
+ * diagonal meet only at a corner, which would pinch the solid to an edge; at
+ * two cells a pixel, a cell either side of the corner bridges them evenly.
+ */
+export function textInk(lines) {
+  const glyphs = lines.map((s) => [...s.toUpperCase()].map((ch) => FONT[ch] || FONT[' ']));
+  const widths = glyphs.map((g) => g.reduce((w, rows) => w + rows[0].length, 0) + g.length - 1);
+  const fw = Math.max(...widths), fh = lines.length * 9 - 2;
+  const font = Array.from({ length: fh }, () => new Uint8Array(fw));
+  glyphs.forEach((line, l) => {
+    let x = Math.floor((fw - widths[l]) / 2);
+    for (const rows of line) {
+      rows.forEach((row, r) => { for (let c = 0; c < row.length; c++) if (row[c] === '#') font[l * 9 + r][x + c] = 1; });
+      x += rows[0].length + 1;
+    }
+  });
+  const w = fw * 2, h = fh * 2;
+  const ink = Array.from({ length: h }, (_, r) => Uint8Array.from({ length: w }, (_, c) => font[r >> 1][c >> 1]));
+  for (let r = 0; r < fh - 1; r++) {
+    for (let c = 0; c < fw - 1; c++) {
+      const a = font[r][c], b = font[r][c + 1], d = font[r + 1][c], e = font[r + 1][c + 1];
+      const R = 2 * r + 1, C = 2 * c + 1; // the cell up and left of the corner they share
+      if (a && e && !b && !d) { ink[R][C + 1] = 1; ink[R + 1][C] = 1; }
+      else if (b && d && !a && !e) { ink[R][C] = 1; ink[R + 1][C + 1] = 1; }
+    }
+  }
+  return { ink, w, h };
+}
+
+/**
+ * The label to cut into the underside of an n x n print widthMm across: the
+ * lines in the font, as large as fits (the coordinates go on two lines when
+ * that makes them larger), centred and mirrored so they read when the print
+ * is turned over, north still at the top. Returns { lines, pxMm, depthMm,
+ * cellMm, ink, w, h, mid }: the ink grid with a millimetre or so of bare bed
+ * around it, cellMm to a cell, centred on mid; or { why } when the label
+ * can't be cut.
+ */
+export function bottomLabel(lines, zMm, n, widthMm) {
+  const layouts = [lines, [...lines[0].split(' '), ...lines.slice(1)]];
+  let best = null;
+  for (const l of layouts) {
+    const text = textInk(l);
+    const pxMm = Math.min(LABEL_MAX_PX, (widthMm * 0.85) / (text.w / 2), (widthMm * 0.6) / (text.h / 2));
+    if (!best || pxMm > best.pxMm) best = { lines: l, text, pxMm };
+  }
+  const { text, pxMm } = best;
+  if (pxMm < LABEL_MIN_PX) return { why: `a ${widthMm} mm model is too small for letters that print` };
+  const cellMm = pxMm / 2;
+  const pad = Math.ceil(1 / cellMm);
+  const w = text.w + 2 * pad, h = text.h + 2 * pad;
+  const ink = Array.from({ length: h }, (_, r) => Uint8Array.from({ length: w }, (_, c) => text.ink[r - pad]?.[c - pad] || 0));
+  const mid = widthMm / 2;
+  // the thinnest model over the label, a grid point either side of it
+  const x0 = mid - (w / 2) * cellMm, x1 = mid + (w / 2) * cellMm, y0 = mid - (h / 2) * cellMm, y1 = mid + (h / 2) * cellMm;
+  const step = widthMm / (n - 1);
+  let low = Infinity;
+  for (let i = Math.max(0, Math.floor(x0 / step) - 1); i <= Math.min(n - 1, Math.ceil(x1 / step) + 1); i++) {
+    for (let j = Math.max(0, Math.floor(n - 1 - y1 / step) - 1); j <= Math.min(n - 1, Math.ceil(n - 1 - y0 / step) + 1); j++) {
+      low = Math.min(low, zMm[j * n + i]);
+    }
+  }
+  const depthMm = Math.min(LABEL_DEPTH_MM, low - LABEL_ROOF_MM);
+  if (depthMm < 0.3) return { why: `the model is only ${low.toFixed(1)} mm thick over it` };
+  return { lines: best.lines, pxMm, depthMm, cellMm, ink, w, h, mid };
+}
+
+/**
+ * The bottom of a print with a label cut up into it, as triangles. perim is
+ * the bottom edge of the walls at z = 0, counter-clockwise from the south-west
+ * corner, n - 1 points a side. The label's box is a grid of cells, each on the
+ * bed or, under ink, the ceiling of a pocket depthMm up, with a wall wherever
+ * the two meet; the strip between the box and the edge is fanned from the
+ * corners. Every point on a straight edge is kept, so every edge is matched.
+ */
+function labelledBottom({ ink, w, h, cellMm, depthMm, mid }, perim, n) {
+  const tris = [];
+  // grid corner (gx, gy), counted from the label's top left as it reads from underneath: mirrored
+  const P = (gx, gy, z = 0) => [mid + (w / 2 - gx) * cellMm, mid + (h / 2 - gy) * cellMm, z];
+  const sides = [
+    Array.from({ length: w + 1 }, (_, k) => P(w - k, h)), // south, west to east
+    Array.from({ length: h + 1 }, (_, k) => P(0, h - k)), // east, south to north
+    Array.from({ length: w + 1 }, (_, k) => P(k, 0)), // north, east to west
+    Array.from({ length: h + 1 }, (_, k) => P(w, k)), // west, north to south
+  ];
+  for (let s = 0; s < 4; s++) {
+    const edge = Array.from({ length: n }, (_, k) => perim[(s * (n - 1) + k) % perim.length]);
+    const box = sides[s];
+    for (let k = 0; k < n - 1; k++) tris.push(box[0], edge[k + 1], edge[k]);
+    for (let k = 0; k < box.length - 1; k++) tris.push(edge[n - 1], box[k], box[k + 1]);
+  }
+  const wall = (p, q) => { // facing right of p to q, into the pocket
+    const p0 = [p[0], p[1], 0], q0 = [q[0], q[1], 0], pd = [p[0], p[1], depthMm], qd = [q[0], q[1], depthMm];
+    tris.push(p0, q0, qd, p0, qd, pd);
+  };
+  for (let r = 0; r < h; r++) {
+    for (let c = 0; c < w; c++) {
+      const z = ink[r][c] ? depthMm : 0;
+      const ne = P(c, r, z), nw = P(c + 1, r, z), sw = P(c + 1, r + 1, z), se = P(c, r + 1, z);
+      tris.push(sw, nw, ne, sw, ne, se); // facing down
+      if (!ink[r][c]) continue;
+      if (!ink[r - 1][c]) wall(nw, ne);
+      if (!ink[r + 1][c]) wall(se, sw);
+      if (!ink[r][c - 1]) wall(ne, se);
+      if (!ink[r][c + 1]) wall(sw, nw);
+    }
+  }
+  return tris;
+}
+
 /**
  * A closed, printable binary STL of an n x n height grid (row 0 north): the
  * terrain on top, four walls down to z = 0, and a bottom fanned from its centre.
  * Every edge is shared by exactly two triangles, so slicers take it as solid.
  * extra is more triangles (three points each) to write after the terrain's,
- * such as buildingTriangles.
+ * such as buildingTriangles. label (from bottomLabel) cuts its letters up
+ * into the bottom.
  */
-export function terrainStl(zMm, n, widthMm, extra = []) {
+export function terrainStl(zMm, n, widthMm, extra = [], label = null) {
   const step = widthMm / (n - 1);
   const X = (i) => i * step;
   const Y = (j) => (n - 1 - j) * step; // north is +y
@@ -812,8 +1001,9 @@ export function terrainStl(zMm, n, widthMm, extra = []) {
     const bot0 = [X(i0), Y(j0), 0], bot1 = [X(i1), Y(j1), 0];
     tri(bot0, bot1, top1); // wall, facing outward
     tri(bot0, top1, top0);
-    tri(centre, bot1, bot0); // bottom, facing down
+    if (!label) tri(centre, bot1, bot0); // bottom, facing down
   }
+  if (label) for (const p of labelledBottom(label, ring.map(([i, j]) => [X(i), Y(j), 0]), n)) tris.push(p);
   for (const p of extra) tris.push(p);
   const count = tris.length / 3;
   const buf = new ArrayBuffer(84 + count * 50);
