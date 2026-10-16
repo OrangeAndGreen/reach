@@ -61,6 +61,42 @@ test('profile keeps the running maximum and where it is', () => {
   assert.equal(core.summitWithin(pts, 50).metres, 300);
 });
 
+test('map image: the square fits the pixel budget and its tiles cover it', () => {
+  const b = core.squareBounds(boston, 10);
+  const z = core.mapImageZoom(b, 17);
+  const box = core.pixelBox(b, z);
+  assert.ok(box.width <= 2048 && core.pixelBox(b, z + 1).width > 2048, `zoom ${z} is not the finest that fits`);
+  near(box.width / box.height, 1, 0.01); // a km square is square on a mercator map
+  const left = Math.min(...box.tiles.map((t) => t.left)), top = Math.min(...box.tiles.map((t) => t.top));
+  const right = Math.max(...box.tiles.map((t) => t.left + 256)), bottom = Math.max(...box.tiles.map((t) => t.top + 256));
+  assert.ok(left <= box.left && top <= box.top && right >= box.left + box.width && bottom >= box.top + box.height);
+  assert.ok(right - (box.left + box.width) < 256 && box.left - left < 256, 'no spare column of tiles');
+  assert.equal(core.mapImageZoom(core.squareBounds(boston, 2), 12), 12); // capped by the layer's zoom
+});
+
+test('map image: a square across the date line wraps its tile numbers', () => {
+  const box = core.pixelBox(core.squareBounds({ lat: -17, lon: 179.99 }, 20), 8);
+  const xs = new Set(box.tiles.map((t) => t.x));
+  assert.ok(xs.has(255) && xs.has(0));
+  assert.ok(box.tiles.every((t) => t.x >= 0 && t.x < 256));
+});
+
+test('table rings: one radius per height reached, one summit per distinct point', () => {
+  const p = core.makeProfile(boston, 100, 10);
+  const east = (km) => ({ lon: boston.lon + km / core.kmPerDegree(boston.lat).lon, lat: boston.lat });
+  const add = (km, m) => { const q = east(km); core.addSample(p, q.lon, q.lat, m); };
+  add(5, 20); add(35, 300); add(95, 900);
+  const pts = core.finishProfile(p);
+  // 100 and 250 m are both first reached by the 300 m point at 40 km; 2000 m never is.
+  const { radii, summits } = core.tableRings(pts, [10, 100, 250, 800, 2000], 100);
+  assert.deepEqual(radii, [10, 40, 100]);
+  assert.deepEqual(summits.map((s) => [s.metres, s.minKm, s.maxKm]), [[20, 10, 10], [300, 40, 40], [900, 100, 100]]);
+  // The 900 m point is the highest both at 100 km (reaching 800 m) and over the whole radius.
+  const wide = core.tableRings(pts, [300, 800], 150);
+  assert.deepEqual(wide.radii, [40, 100, 150]);
+  assert.deepEqual(wide.summits.map((s) => [s.metres, s.minKm, s.maxKm]), [[300, 40, 40], [900, 100, 150]]);
+});
+
 test('a profile with nothing in a ring leaves it empty', () => {
   const p = core.makeProfile(boston, 10, 2);
   const pts = core.finishProfile(p);

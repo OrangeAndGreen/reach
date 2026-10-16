@@ -61,11 +61,13 @@ $('radius').value = String(state.radius);
 // ---------- map ----------
 
 const map = L.map('map', { worldCopyJump: true, zoomControl: true }).setView([30, -40], 3);
+// credit is the attribution as plain text, for the corner of a downloaded map image.
 const streets = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 18, attribution: '&copy; OpenStreetMap contributors',
+  maxZoom: 18, attribution: '&copy; OpenStreetMap contributors', credit: '© OpenStreetMap contributors',
 });
 const topo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
   maxZoom: 17, attribution: 'Map: &copy; OpenTopoMap (CC-BY-SA), data &copy; OpenStreetMap contributors',
+  credit: 'Map © OpenTopoMap (CC-BY-SA), data © OpenStreetMap contributors',
 });
 topo.addTo(map);
 L.control.layers({ Terrain: topo, Streets: streets }, null, { position: 'topright' }).addTo(map);
@@ -281,18 +283,35 @@ function renderPlaces() {
     ul.append(li);
   });
   heightLayer.clearLayers();
-  for (const p of state.places) {
+  // A shaded circle for each radius in the table, largest first; nested ones darken toward the place.
+  const rings = state.places.map((p) => (p.points ? core.tableRings(p.points, tableHeights(), p.radius) : null));
+  state.places.forEach((p, k) => {
+    for (const r of [...(rings[k]?.radii || [])].reverse()) {
+      L.circle([p.lat, p.lon], { radius: r * 1000, color: placeColor(p), weight: 1, opacity: 0.6, fillColor: placeColor(p), fillOpacity: 0.06, interactive: false })
+        .addTo(heightLayer);
+    }
+  });
+  state.places.forEach((p, k) => {
     L.circleMarker([p.lat, p.lon], { radius: 7, color: '#fff', weight: 2, fillColor: placeColor(p), fillOpacity: 1 })
       .bindTooltip(p.name).addTo(heightLayer);
-    if (p.points) {
-      const top = core.summitWithin(p.points, state.radius);
-      if (top) {
-        L.circleMarker([top.lat, top.lon], { radius: 5, color: placeColor(p), weight: 2, fillColor: '#fff', fillOpacity: 1 })
-          .bindTooltip(`Highest within ${core.formatDistance(state.radius, state.units)} of ${p.name.split(',')[0]}: ${core.formatHeight(top.metres, state.units)}`)
-          .addTo(heightLayer);
-      }
+    for (const top of rings[k]?.summits || []) {
+      L.circleMarker([top.lat, top.lon], { radius: 5, color: placeColor(p), weight: 2, fillColor: '#fff', fillOpacity: 1 })
+        .bindTooltip(`Highest within ${distanceRange(top.minKm, top.maxKm)} of ${p.name.split(',')[0]}: ${core.formatHeight(top.metres, state.units)}`)
+        .addTo(heightLayer);
     }
-  }
+  });
+}
+
+/** The heights the table asks about, round numbers in the units on show. */
+function tableHeights() {
+  return state.units === 'imperial' ? [500, 1000, 3000, 5000, 10000].map((ft) => ft / 3.28084) : [100, 500, 1000, 2000, 3000];
+}
+
+/** "40 km", or "40–100 km" when a summit is the highest over a span of radii. */
+function distanceRange(minKm, maxKm) {
+  const hi = core.formatDistance(maxKm, state.units);
+  if (minKm === maxKm) return hi;
+  return `${core.formatDistance(minKm, state.units).replace(/ (km|mi)$/, '')}–${hi}`;
 }
 
 function fitPlaces() {
@@ -381,7 +400,7 @@ function renderHeight() {
   });
 
   // Distance needed to reach each height, and the top within the whole radius.
-  const heights = state.units === 'imperial' ? [500, 1000, 3000, 5000, 10000].map((ft) => ft / 3.28084) : [100, 500, 1000, 2000, 3000];
+  const heights = tableHeights();
   const head = `<thead><tr><th>To stand this high</th>${ready.map((p) => `<th>${escapeHtml(p.name.split(',')[0])}</th>`).join('')}</tr></thead>`;
   const rows = heights.map((m) => `<tr><td>${core.formatHeight(m, state.units)}</td>${ready.map((p) => {
     const d = core.distanceToReach(p.points, m);
@@ -683,6 +702,9 @@ function drawPrintSquare(fit) {
   L.rectangle(corners, { color: '#ffffff', weight: 7, opacity: 0.9, fill: false, interactive: false }).addTo(printLayer);
   const rect = L.rectangle(corners, { color: cssVar('--accent'), weight: 3, fill: true, fillOpacity: 0.06, interactive: false });
   rect.addTo(printLayer);
+  // The centre, so a small nudge is a click just beside it. Not interactive: a click on it still re-centres.
+  L.circleMarker([state.print.lat, state.print.lon], { radius: 5, color: '#fff', weight: 2, fillColor: cssVar('--accent'), fillOpacity: 1, interactive: false })
+    .addTo(printLayer);
   if (fit) map.fitBounds(rect.getBounds().pad(0.6));
 }
 
@@ -854,6 +876,48 @@ function choose(id, value, label) {
   if (![...el.options].some((o) => Number(o.value) === value)) el.append(new Option(label, value));
   el.value = [...el.options].find((o) => Number(o.value) === value).value;
 }
+
+/**
+ * The map layer on show, cropped to the print square, as a PNG: tiles fetched
+ * at the most detailed zoom that keeps the square within 2,048 px.
+ */
+$('print-map').addEventListener('click', async () => {
+  const layer = map.hasLayer(streets) ? streets : topo;
+  const set = printSettings();
+  const b = core.squareBounds(state.print, set.sideKm);
+  const z = core.mapImageZoom(b, layer.options.maxZoom);
+  const box = core.pixelBox(b, z);
+  const w = Math.round(box.width), h = Math.round(box.height);
+  $('print-map').disabled = true;
+  try {
+    const canvas = new OffscreenCanvas(w, h);
+    const ctx = canvas.getContext('2d');
+    let done = 0;
+    await Promise.all(box.tiles.map((t, k) => limited(async () => {
+      const url = L.Util.template(layer._url, { s: 'abc'[k % 3], z: t.z, x: t.x, y: t.y });
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`map tile ${t.z}/${t.x}/${t.y}: ${res.status}`);
+      ctx.drawImage(await createImageBitmap(await res.blob()), t.left - box.left, t.top - box.top);
+      progress('print', `Fetching the map: tile ${++done} of ${box.tiles.length}`, done / box.tiles.length);
+    })));
+    // The tiles' licence asks for the credit on the image.
+    const credit = layer.options.credit;
+    ctx.font = `${Math.max(11, Math.round(w / 110))}px sans-serif`;
+    const pad = 4, tw = ctx.measureText(credit).width, th = parseInt(ctx.font, 10);
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.fillRect(w - tw - pad * 2, h - th - pad * 2, tw + pad * 2, th + pad * 2);
+    ctx.fillStyle = '#333';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(credit, w - tw - pad, h - pad);
+    const name = printFileName({ centre: state.print, set }, 'png').replace(/\.png$/, '-map.png');
+    download(name, await canvas.convertToBlob({ type: 'image/png' }), 'image/png');
+    status('print', `Saved ${name}: ${w} × ${h} px, about ${(set.sideKm * 1000 / w).toFixed(1)} m per pixel.`);
+  } catch (err) {
+    status('print', `Couldn't make the map image (${err.message}).`, true);
+  } finally {
+    $('print-map').disabled = false;
+  }
+});
 
 $('print-open').addEventListener('click', () => $('print-file').click());
 $('print-file').addEventListener('change', async () => {
