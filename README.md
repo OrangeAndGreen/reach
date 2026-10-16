@@ -53,7 +53,14 @@ ES modules, which is why it needs the little server rather than file://.
   off Cuba, 123 m in the Everglades. A pixel standing more than its own height
   (and at least 60 m) above the third-highest value in its 3x3 block is
   flattened to that value. Real summits pass, because their neighbours are high
-  too. A one-pixel island can be lost.
+  too. A one-pixel island can be lost. The same test runs across each pixel's
+  left/right and upper/lower neighbours, for one-pixel streaks. Heights no
+  place on Earth has (the tiles' no-data patches decode to 32,767 m) count as
+  missing. And the zoom-12 re-read replaces the coarse value rather than
+  competing with it, so a glitch patch in a coarse tile can't outrank the
+  truth.
+- Tall buildings are in the data. Within 100 km of Miami the top is 71 m, the
+  condo towers of Sunny Isles Beach.
 - **Drive** asks OSRM for the time from the start to every point of an n×n grid
   (32, 44 or 56 across), sized to the longest limit at 95 km/h. A point more
   than half a grid step (20 km at most) from a road counts as unreachable, so
