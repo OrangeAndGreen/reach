@@ -15,7 +15,11 @@ Three tools on one map:
   STL for the slicer. Choose the model width, the detail, a height stretch and
   the base thickness. A preview you can turn shows the model, beside its real
   dimensions and scale. The default is the 20 km around Mt Washington:
-  120 × 120 × 17.6 mm at ×1.5.
+  120 × 120 × 17.6 mm at ×1.5. **Download KML** saves the square for Google
+  Earth along with every setting (centre, size, width, detail, stretch, base)
+  and what came of them (tile zoom, metres per pixel, lowest and highest point,
+  model height, scale, triangle count, STL file name). **Open KML** reads one
+  back and builds the same STL again.
 
 All three started as ideas parked in ViggiPy's `TODO.txt`: the
 distance-to-height graph (Miami, Boston, Cape Town), the drive-distance graph

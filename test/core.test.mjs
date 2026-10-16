@@ -300,3 +300,41 @@ test('terrain STL faces outward: top normals point up, bottom down', () => {
   assert.ok(tris.slice(0, 8).every((t) => t.normal[2] > 0.99));
   assert.ok(tris.filter((t) => t.v.every((p) => p[2] === 0)).every((t) => t.normal[2] < -0.99));
 });
+
+test('a print KML carries the square, the settings and the model figures', () => {
+  const centre = { name: 'Mount Washington, New Hampshire', lat: 44.2706, lon: -71.3033 };
+  const set = { sideKm: 20, widthMm: 120, cells: 200, exaggeration: 1.5, baseMm: 3 };
+  const model = { zoom: 12, pixelM: 27.8, lowM: 410, highM: 1916, reliefMm: 13.55, triangles: 81590 };
+  const kml = core.printKml({ centre, set, model, stlFile: 'reach-mount-washington-20km.stl', made: new Date('2026-10-15T12:00:00Z') });
+  assert.match(kml, /<Data name="heightStretch"><displayName>Height stretch \(x\)<\/displayName><value>1.5<\/value><\/Data>/);
+  assert.match(kml, /<Data name="metresPerPixel">.*<value>28<\/value>/);
+  assert.match(kml, /<Data name="modelHeightMm">.*<value>16.55<\/value>/);
+  assert.match(kml, /<Data name="mapScale">.*<value>1:166667<\/value>/);
+  assert.match(kml, /<Data name="stlFile">.*<value>reach-mount-washington-20km.stl<\/value>/);
+  assert.equal((kml.match(/<Placemark/g) || []).length, 2);
+  // the polygon closes on its first corner
+  const coords = kml.match(/<coordinates>([^<]+)<\/coordinates>/)[1].trim().split(' ');
+  assert.equal(coords.length, 5);
+  assert.equal(coords[0], coords[4]);
+
+  assert.deepEqual(core.parsePrintKml(kml), {
+    centre: { name: centre.name, lat: 44.2706, lon: -71.3033 },
+    set,
+  });
+});
+
+test('a print KML round-trips awkward names, and works without a model', () => {
+  const centre = { name: 'Rock & "Roll" <Hills>', lat: -33.9, lon: 18.4 };
+  const set = { sideKm: 5, widthMm: 80, cells: 120, exaggeration: 10, baseMm: 2 };
+  const kml = core.printKml({ centre, set });
+  assert.match(kml, /Rock &amp; &quot;Roll&quot; &lt;Hills&gt;/);
+  assert.doesNotMatch(kml, /metresPerPixel/);
+  assert.deepEqual(core.parsePrintKml(kml), { centre, set });
+});
+
+test('parsePrintKml refuses other KML and bad values', () => {
+  const drive = core.driveKml({ name: 'x', origin: { name: 'o', lat: 0, lon: 0 }, bands: [] });
+  assert.throws(() => core.parsePrintKml(drive), /not saved from Reach/);
+  const good = core.printKml({ centre: { name: 'a', lat: 1, lon: 2 }, set: { sideKm: 5, widthMm: 80, cells: 120, exaggeration: 2, baseMm: 2 } });
+  assert.throws(() => core.parsePrintKml(good.replace('<value>120</value>', '<value>lots</value>')), /gridCells/);
+});

@@ -510,6 +510,112 @@ export function printHeights(heights, { sideKm, widthMm, exaggeration = 1, baseM
 }
 
 /**
+ * A KML of a print: the square as a polygon, a pin at its centre, and every
+ * input and derived figure as ExtendedData, so Google Earth shows the area and
+ * the settings, and parsePrintKml can rebuild the same STL from the file.
+ * model is optional; without it only the inputs are written.
+ */
+export function printKml({ centre, set, model = null, stlFile = '', made = new Date() }) {
+  const b = squareBounds(centre, set.sideKm);
+  const scale = Math.round((set.sideKm * 1e6) / set.widthMm);
+  const inputs = [
+    ['reachFormat', 'Reach print format', PRINT_FORMAT],
+    ['centreName', 'Centre', centre.name],
+    ['centreLat', 'Centre latitude', centre.lat.toFixed(6)],
+    ['centreLon', 'Centre longitude', centre.lon.toFixed(6)],
+    ['squareKm', 'Square side (km)', set.sideKm],
+    ['modelWidthMm', 'Model width (mm)', set.widthMm],
+    ['gridCells', 'Detail (grid points per side)', set.cells],
+    ['heightStretch', 'Height stretch (x)', set.exaggeration],
+    ['baseMm', 'Base under the lowest point (mm)', set.baseMm],
+    ['seaCutToZero', 'Sea floor cut to sea level', 'yes'],
+  ];
+  const derived = [
+    ['boundsNorth', 'North edge', b.north.toFixed(6)],
+    ['boundsSouth', 'South edge', b.south.toFixed(6)],
+    ['boundsEast', 'East edge', b.east.toFixed(6)],
+    ['boundsWest', 'West edge', b.west.toFixed(6)],
+    ['mapScale', 'Map scale', `1:${scale}`],
+    ['mmPerKmAcross', 'Model mm per km across', +(set.widthMm / set.sideKm).toFixed(4)],
+    ['elevationSource', 'Elevation data', 'Mapzen Terrain Tiles on AWS (Terrarium)'],
+  ];
+  if (model) {
+    const vertical = 1 / ((set.widthMm / (set.sideKm * 1000)) * set.exaggeration);
+    derived.push(
+      ['elevationZoom', 'Elevation tile zoom', model.zoom],
+      ['metresPerPixel', 'Elevation detail (m per pixel)', Math.round(model.pixelM)],
+      ['gridSpacingM', 'Grid spacing (m)', Math.round((set.sideKm * 1000) / (set.cells - 1))],
+      ['lowestM', 'Lowest point (m)', Math.round(model.lowM)],
+      ['highestM', 'Highest point (m)', Math.round(model.highM)],
+      ['reliefMm', 'Relief on the model (mm)', +model.reliefMm.toFixed(2)],
+      ['modelHeightMm', 'Model height overall (mm)', +(set.baseMm + model.reliefMm).toFixed(2)],
+      ['metresPerMmVertical', 'Metres of ground per mm of model height', +vertical.toFixed(2)],
+      ['triangles', 'STL triangles', model.triangles],
+    );
+  }
+  if (stlFile) derived.push(['stlFile', 'STL file', stlFile]);
+  derived.push(['made', 'Made', made.toISOString()]);
+
+  const data = (rows) => rows.map(([k, label, v]) =>
+    `      <Data name="${k}"><displayName>${escapeXml(label)}</displayName><value>${escapeXml(v)}</value></Data>`).join('\n');
+  const table = (rows) => rows.filter(([k]) => k !== 'reachFormat')
+    .map(([, label, v]) => `<tr><td>${escapeXml(label)}</td><td>${escapeXml(v)}</td></tr>`).join('');
+  const description = `<![CDATA[<p>A ${set.sideKm} km square of terrain as a ${set.widthMm} mm model. Open this file in Reach's Print tab to build the same STL.</p>` +
+    `<table>${table(inputs)}${table(derived)}</table>]]>`;
+  const ring = [[b.west, b.north], [b.east, b.north], [b.east, b.south], [b.west, b.south], [b.west, b.north]];
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+  <name>${escapeXml(`Reach print: ${centre.name}, ${set.sideKm} km`)}</name>
+  <Style id="square"><LineStyle><color>ff24548f</color><width>3</width></LineStyle><PolyStyle><color>2224548f</color></PolyStyle></Style>
+  <Placemark id="reach-print">
+    <name>${escapeXml(`${set.sideKm} km print area`)}</name>
+    <description>${description}</description>
+    <styleUrl>#square</styleUrl>
+    <ExtendedData>
+${data(inputs)}
+${data(derived)}
+    </ExtendedData>
+    <Polygon><tessellate>1</tessellate><outerBoundaryIs><LinearRing><coordinates>${coordText(ring)}</coordinates></LinearRing></outerBoundaryIs></Polygon>
+  </Placemark>
+  <Placemark><name>${escapeXml(centre.name)}</name><Point><coordinates>${centre.lon.toFixed(6)},${centre.lat.toFixed(6)},0</coordinates></Point></Placemark>
+</Document>
+</kml>
+`;
+}
+
+export const PRINT_FORMAT = 'reach-print-1';
+
+const unescapeXml = (s) => s.replace(/&(lt|gt|amp|apos|quot);/g, (_, e) => ({ lt: '<', gt: '>', amp: '&', apos: "'", quot: '"' })[e]);
+
+/**
+ * The centre and settings from a KML made by printKml. Throws an Error that
+ * says what is wrong when the file is not one, or a value is missing or bad.
+ */
+export function parsePrintKml(text) {
+  const values = {};
+  for (const m of text.matchAll(/<Data\s+name="([^"]+)"[^>]*>[\s\S]*?<value>([\s\S]*?)<\/value>[\s\S]*?<\/Data>/g)) {
+    values[m[1]] = unescapeXml(m[2].trim());
+  }
+  if (values.reachFormat !== PRINT_FORMAT) throw new Error("this KML was not saved from Reach's Print tab");
+  const num = (k, lo, hi) => {
+    const v = Number(values[k]);
+    if (values[k] == null || !Number.isFinite(v) || v < lo || v > hi) throw new Error(`the file's ${k} is missing or out of range`);
+    return v;
+  };
+  return {
+    centre: { name: values.centreName || 'Saved print', lat: num('centreLat', -85, 85), lon: num('centreLon', -180, 180) },
+    set: {
+      sideKm: num('squareKm', 0.1, 1000),
+      widthMm: num('modelWidthMm', 10, 1000),
+      cells: Math.round(num('gridCells', 10, 1000)),
+      exaggeration: num('heightStretch', 0.1, 100),
+      baseMm: num('baseMm', 0, 100),
+    },
+  };
+}
+
+/**
  * A closed, printable binary STL of an n x n height grid (row 0 north): the
  * terrain on top, four walls down to z = 0, and a bottom fanned from its centre.
  * Every edge is shared by exactly two triangles, so slicers take it as solid.

@@ -678,7 +678,10 @@ function drawPrintSquare(fit) {
   printLayer.clearLayers();
   $('print-name').textContent = `Centred on ${state.print.name}.`;
   const b = core.squareBounds(state.print, Number($('print-side').value));
-  const rect = L.rectangle([[b.south, b.west], [b.north, b.east]], { color: cssVar('--accent'), weight: 2, fill: false, interactive: false });
+  const corners = [[b.south, b.west], [b.north, b.east]];
+  // A white casing under the line keeps the square readable over busy city maps.
+  L.rectangle(corners, { color: '#ffffff', weight: 7, opacity: 0.9, fill: false, interactive: false }).addTo(printLayer);
+  const rect = L.rectangle(corners, { color: cssVar('--accent'), weight: 3, fill: true, fillOpacity: 0.06, interactive: false });
   rect.addTo(printLayer);
   if (fit) map.fitBounds(rect.getBounds().pad(0.6));
 }
@@ -730,10 +733,11 @@ async function buildModel() {
     }
     const scaled = core.printHeights(heights, set);
     const stl = core.terrainStl(scaled.mm, n, set.widthMm);
-    state.model = { stl, scaled, set, centre, pixel: core.pixelMetres(centre.lat, z) };
+    state.model = { stl, scaled, set, centre, zoom: z, pixel: core.pixelMetres(centre.lat, z) };
     showModel();
     status('print', `Terrain read at ${Math.round(state.model.pixel)} m per pixel and sampled on a ${n} × ${n} grid.`);
     $('print-stl').disabled = false;
+    $('print-kml').disabled = false;
   } catch (err) {
     status('print', `Couldn't build the model (${err.message}).`, true);
   } finally {
@@ -821,11 +825,59 @@ function renderPrintTable() {
   $('print-table').innerHTML = `<tbody>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</tbody>`;
 }
 
+function printFileName(m, ext) {
+  const slug = m.centre.name.split(',')[0].toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'print';
+  return `reach-${slug}-${m.set.sideKm}km.${ext}`;
+}
+
 $('print-stl').addEventListener('click', () => {
   const m = state.model;
   if (!m) return;
-  const slug = m.centre.name.split(',')[0].toLowerCase().replace(/[^a-z0-9]+/g, '-');
-  download(`reach-${slug}-${m.set.sideKm}km.stl`, m.stl, 'model/stl');
+  download(printFileName(m, 'stl'), m.stl, 'model/stl');
+});
+
+$('print-kml').addEventListener('click', () => {
+  const m = state.model;
+  if (!m) return;
+  const kml = core.printKml({
+    centre: m.centre,
+    set: m.set,
+    model: { zoom: m.zoom, pixelM: m.pixel, lowM: m.scaled.lowM, highM: m.scaled.highM, reliefMm: m.scaled.reliefMm, triangles: new DataView(m.stl).getUint32(80, true) },
+    stlFile: printFileName(m, 'stl'),
+  });
+  download(printFileName(m, 'kml'), kml, 'application/vnd.google-earth.kml+xml');
+});
+
+/** Selects value in a <select>, adding it as an option when a saved file asks for one the list lacks. */
+function choose(id, value, label) {
+  const el = $(id);
+  if (![...el.options].some((o) => Number(o.value) === value)) el.append(new Option(label, value));
+  el.value = [...el.options].find((o) => Number(o.value) === value).value;
+}
+
+$('print-open').addEventListener('click', () => $('print-file').click());
+$('print-file').addEventListener('change', async () => {
+  const file = $('print-file').files[0];
+  $('print-file').value = '';
+  if (!file) return;
+  let saved;
+  try {
+    saved = core.parsePrintKml(await file.text());
+  } catch (err) {
+    status('print', `Couldn't open ${file.name}: ${err.message}.`, true);
+    return;
+  }
+  const { centre, set } = saved;
+  choose('print-side', set.sideKm, `${set.sideKm} km`);
+  choose('print-width', set.widthMm, `${set.widthMm} mm`);
+  choose('print-cells', set.cells, `${set.cells} × ${set.cells}`);
+  choose('print-base', set.baseMm, `${set.baseMm} mm`);
+  const exag = $('print-exag');
+  if (set.exaggeration > Number(exag.max)) exag.max = String(set.exaggeration);
+  exag.value = String(set.exaggeration);
+  $('print-exag-value').textContent = `× ${exag.value}`;
+  setPrintCentre(centre);
+  status('print', `Opened ${file.name}. Building the same model.`);
 });
 
 
