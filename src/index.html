@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reach</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#8f5424">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Source+Sans+3:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+<header class="bar">
+  <div class="brand">
+    <span class="wordmark">Reach</span>
+    <span class="tagline">how high, how far</span>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button id="tab-height" role="tab" aria-selected="true" data-tab="height">Height</button>
+    <button id="tab-drive" role="tab" aria-selected="false" data-tab="drive">Drive</button>
+    <button id="tab-print" role="tab" aria-selected="false" data-tab="print">Print</button>
+  </nav>
+  <div class="units" role="group" aria-label="Units">
+    <button id="units-metric" data-units="metric" aria-pressed="true">km · m</button>
+    <button id="units-imperial" data-units="imperial" aria-pressed="false">mi · ft</button>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="panel">
+    <!-- Height: distance from a place vs the highest ground within it -->
+    <div id="pane-height" class="pane">
+      <h1>How far to the high ground?</h1>
+      <p class="lede">For each distance from a place, the highest point anywhere within it. Cape Town has a mountain on its doorstep. Miami has to cross the sea to Cuba.</p>
+
+      <div class="field">
+        <label for="place-search">Places to compare</label>
+        <div class="search">
+          <input id="place-search" type="search" placeholder="Search a town or city" autocomplete="off">
+          <ul id="place-results" class="results" hidden></ul>
+        </div>
+        <p class="hint">Or click the map while this tab is open. Up to eight places.</p>
+      </div>
+      <ul id="places" class="places"></ul>
+
+      <div class="row">
+        <div class="field">
+          <label for="radius">Out to</label>
+          <select id="radius">
+            <option value="50">50 km</option>
+            <option value="100">100 km</option>
+            <option value="250">250 km</option>
+            <option value="500" selected>500 km</option>
+            <option value="1000">1,000 km</option>
+            <option value="2000">2,000 km</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="xscale">Distance axis</label>
+          <select id="xscale">
+            <option value="linear">Even</option>
+            <option value="log">Log</option>
+          </select>
+        </div>
+        <button id="measure" class="primary">Measure</button>
+      </div>
+      <div id="height-status" class="status" aria-live="polite"></div>
+
+      <figure class="chart-wrap">
+        <figcaption>Highest point within each distance</figcaption>
+        <div id="height-legend" class="legend"></div>
+        <div id="height-chart" class="chart"></div>
+      </figure>
+
+      <div class="table-wrap">
+        <table id="height-table"></table>
+      </div>
+      <div class="actions">
+        <button id="height-csv">Download CSV</button>
+      </div>
+    </div>
+
+    <!-- Drive: drive-time contours from one place -->
+    <div id="pane-drive" class="pane" hidden>
+      <h1>How far in a day's drive?</h1>
+      <p class="lede">Drive-time contours from one start, from road times to a grid of points around it. Then the highest ground inside each one.</p>
+
+      <div class="field">
+        <label for="origin-search">Start</label>
+        <div class="search">
+          <input id="origin-search" type="search" placeholder="Search a town or city" autocomplete="off">
+          <ul id="origin-results" class="results" hidden></ul>
+        </div>
+        <p class="hint">Or click the map while this tab is open. <span id="origin-name" class="origin"></span></p>
+      </div>
+
+      <div class="row">
+        <div class="field">
+          <label for="limits">Hours</label>
+          <input id="limits" type="text" value="4, 8, 12" inputmode="decimal">
+        </div>
+        <div class="field">
+          <label for="detail">Detail</label>
+          <select id="detail">
+            <option value="32">Quick (1,024 points)</option>
+            <option value="44" selected>Normal (1,936 points)</option>
+            <option value="56">Fine (3,136 points)</option>
+          </select>
+        </div>
+        <button id="drive-run" class="primary">Map drive times</button>
+      </div>
+      <div id="drive-status" class="status" aria-live="polite"></div>
+
+      <figure class="chart-wrap">
+        <figcaption>
+          <span id="drive-chart-title">Farthest point reached, straight line</span>
+        </figcaption>
+        <div class="seg" role="group" aria-label="Measure">
+          <button id="dm-far" data-measure="far" aria-pressed="true">Farthest</button>
+          <button id="dm-area" data-measure="area" aria-pressed="false">Area</button>
+          <button id="dm-high" data-measure="high" aria-pressed="false">Highest point</button>
+        </div>
+        <div id="drive-chart" class="chart"></div>
+      </figure>
+
+      <div class="table-wrap">
+        <table id="drive-table"></table>
+      </div>
+      <div class="actions">
+        <button id="drive-high">Find the high ground</button>
+        <button id="drive-kml">Download KML</button>
+      </div>
+      <p class="hint">Road times come from the public OSRM demo server, so a run goes in polite batches. Times are free-flow driving with no traffic or stops.</p>
+    </div>
+
+    <!-- Print: a square of terrain as a solid STL for the 3D printer -->
+    <div id="pane-print" class="pane" hidden>
+      <h1>Print a piece of the planet</h1>
+      <p class="lede">A square of real terrain as a closed STL, ready for the slicer. Pick the middle on the map, choose its size, and stretch the heights if the land is flat.</p>
+
+      <div class="field">
+        <label for="print-search">Centre</label>
+        <div class="search">
+          <input id="print-search" type="search" placeholder="Search a peak, town or park" autocomplete="off">
+          <ul id="print-results" class="results" hidden></ul>
+        </div>
+        <p class="hint">Or click the map while this tab is open. <span id="print-name" class="origin"></span></p>
+      </div>
+
+      <div class="row">
+        <div class="field">
+          <label for="print-side">Square</label>
+          <select id="print-side">
+            <option value="2">2 km</option>
+            <option value="5">5 km</option>
+            <option value="10">10 km</option>
+            <option value="20" selected>20 km</option>
+            <option value="40">40 km</option>
+            <option value="80">80 km</option>
+            <option value="160">160 km</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="print-width">Model width</label>
+          <select id="print-width">
+            <option value="80">80 mm</option>
+            <option value="120" selected>120 mm</option>
+            <option value="180">180 mm</option>
+            <option value="250">250 mm</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="print-cells">Detail</label>
+          <select id="print-cells">
+            <option value="120">120 × 120</option>
+            <option value="200" selected>200 × 200</option>
+            <option value="300">300 × 300</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="print-exag">Height stretch <span id="print-exag-value"></span></label>
+          <input id="print-exag" type="range" min="1" max="10" step="0.25" value="1.5">
+        </div>
+        <div class="field">
+          <label for="print-base">Base</label>
+          <select id="print-base">
+            <option value="2">2 mm</option>
+            <option value="3" selected>3 mm</option>
+            <option value="5">5 mm</option>
+          </select>
+        </div>
+        <button id="print-run" class="primary">Build model</button>
+      </div>
+      <div id="print-status" class="status" aria-live="polite"></div>
+
+      <figure class="chart-wrap">
+        <figcaption>Preview <span class="hint">(drag to turn, scroll to zoom)</span></figcaption>
+        <div id="print-preview" class="preview"></div>
+      </figure>
+      <div class="table-wrap">
+        <table id="print-table"></table>
+      </div>
+      <div class="actions">
+        <button id="print-stl" disabled>Download STL</button>
+        <button id="print-kml" disabled>Download KML</button>
+        <button id="print-open">Open KML</button>
+        <input id="print-file" type="file" accept=".kml,application/vnd.google-earth.kml+xml" hidden>
+      </div>
+      <p class="hint">The KML holds the square for Google Earth and every setting above. Open it here later to build the same STL again.</p>
+    </div>
+  </section>
+
+  <section class="map-wrap">
+    <div id="map"></div>
+  </section>
+</main>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
