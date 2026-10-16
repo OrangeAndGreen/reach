@@ -27,6 +27,13 @@ maker with time-contour placemarks, and 3D-printed landscapes from DEM data.
 
 ## Run it
 
+Live at https://orangeandgreen.github.io/reach/. Every push to `master`
+publishes `src/` there (`.github/workflows/pages.yml`, after the tests pass).
+On Android, open it in Chrome and choose Install. On the PC, Chrome or Edge
+can install it from the address bar.
+
+Locally:
+
 ```
 npm start        # http://localhost:8732
 npm test
