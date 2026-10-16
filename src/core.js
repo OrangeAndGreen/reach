@@ -97,7 +97,10 @@ export function terrariumElevation(r, g, b) {
  * across each pixel's left and right neighbours and its upper and lower ones,
  * which catches one-pixel streaks (181 m at the Port Everglades channel).
  * A missing (NaN) pixel takes the highest valid value around it, or 0 when
- * there is none.
+ * there is none. The block test also runs the other way up, for pits: where
+ * the land and sea-floor sources meet, the odd pixel drops thousands of
+ * metres below its neighbours (-4,348 m beside 4 m of beach at Monterey).
+ * Pits can't change a highest point, so only the sea floor sees this.
  */
 export function despike(elev, size = 256) {
   const out = Float32Array.from(elev);
@@ -105,6 +108,7 @@ export function despike(elev, size = 256) {
     for (let x = 0; x < size; x++) {
       // The three highest values in the 3x3 block, kept by hand: this runs per pixel.
       let a = -Infinity, b = -Infinity, c = -Infinity, n = 0;
+      let la = Infinity, lb = Infinity, lc = Infinity; // and the three lowest
       for (let dy = -1; dy <= 1; dy++) {
         const yy = y + dy;
         if (yy < 0 || yy >= size) continue;
@@ -115,6 +119,7 @@ export function despike(elev, size = 256) {
           if (Number.isNaN(v)) continue;
           n++;
           if (v > a) { c = b; b = a; a = v; } else if (v > b) { c = b; b = v; } else if (v > c) c = v;
+          if (v < la) { lc = lb; lb = la; la = v; } else if (v < lb) { lc = lb; lb = v; } else if (v < lc) lc = v;
         }
       }
       const e = elev[y * size + x];
@@ -122,6 +127,8 @@ export function despike(elev, size = 256) {
       const spike = (ref) => ref > -Infinity && e - ref > Math.max(60, Math.abs(ref));
       const third = n >= 3 ? c : b;
       if (spike(third)) { out[y * size + x] = third; continue; }
+      const thirdLow = n >= 3 ? lc : lb;
+      if (thirdLow < Infinity && thirdLow - e > Math.max(60, Math.abs(thirdLow))) { out[y * size + x] = thirdLow; continue; }
       const at = (xx, yy) => (xx < 0 || yy < 0 || xx >= size || yy >= size ? NaN : elev[yy * size + xx]);
       for (const [p, q] of [[at(x - 1, y), at(x + 1, y)], [at(x, y - 1), at(x, y + 1)]]) {
         if (Number.isNaN(p) || Number.isNaN(q)) continue;
@@ -541,17 +548,39 @@ export function printZoom(center, sideKm, cells, maxTiles = 64) {
 }
 
 /**
+ * The deepest zoom whose tiles carry the sea floor. From zoom 11 on, every sea
+ * pixel reads 0 (Monterey Canyon is -657 m at zoom 10 and 0 at zoom 11), and
+ * lakes are their flat surface at every zoom.
+ */
+export const SEA_FLOOR_ZOOM = 10;
+
+/**
+ * Puts the sea floor back under a detailed reading: where the fine grid is at
+ * or below sea level, the coarse one (read at SEA_FLOOR_ZOOM) wins if it is
+ * deeper. Land keeps its detail, and land below sea level keeps its own depth.
+ */
+export function withSeaFloor(fine, coarse) {
+  return fine.map((h, k) => (h > 0 ? h : Math.min(h, coarse[k])));
+}
+
+/**
  * Scales a height grid to millimetres: the model is widthMm across, the base
  * slab is baseMm thick under the lowest point, and heights are stretched by
- * exaggeration. Sea floor is cut to sea level when clampSea is set.
+ * exaggeration. The sea floor is cut off seaFloorM below sea level (0 cuts it
+ * at sea level), and depths are stretched by depthStretch.
  */
-export function printHeights(heights, { sideKm, widthMm, exaggeration = 1, baseMm = 3, clampSea = true }) {
-  const metres = clampSea ? heights.map((h) => Math.max(0, h)) : heights;
+export function printHeights(heights, { sideKm, widthMm, exaggeration = 1, baseMm = 3, seaFloorM = 0, depthStretch = exaggeration }) {
+  const floor = seaFloorM ? -seaFloorM : 0; // not -0, which would show as a lowest point of "-0 m"
+  const metres = heights.map((h) => Math.max(floor, h));
   let lo = Infinity, hi = -Infinity;
   for (const h of metres) { if (h < lo) lo = h; if (h > hi) hi = h; }
   const mmPerMetre = widthMm / (sideKm * 1000);
-  const mm = metres.map((h) => baseMm + (h - lo) * mmPerMetre * exaggeration);
-  return { mm, lowM: lo, highM: hi, reliefMm: (hi - lo) * mmPerMetre * exaggeration, mmPerMetre };
+  const up = (h) => h * mmPerMetre * (h > 0 ? exaggeration : depthStretch); // mm above sea level
+  const mm = metres.map((h) => baseMm + up(h) - up(lo));
+  return {
+    mm, lowM: lo, highM: hi, reliefMm: up(hi) - up(lo), mmPerMetre,
+    seaMm: lo < 0 ? baseMm - up(lo) : null, // where sea level sits on the model, when anything is below it
+  };
 }
 
 /**
@@ -573,7 +602,8 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ['gridCells', 'Detail (grid points per side)', set.cells],
     ['heightStretch', 'Height stretch (x)', set.exaggeration],
     ['baseMm', 'Base under the lowest point (mm)', set.baseMm],
-    ['seaCutToZero', 'Sea floor cut to sea level', 'yes'],
+    ['seaFloorM', 'Sea floor down to (m, 0 cuts it at sea level)', set.seaFloorM ?? 0],
+    ['depthStretch', 'Depth stretch (x)', set.depthStretch ?? set.exaggeration],
   ];
   const derived = [
     ['boundsNorth', 'North edge', b.north.toFixed(6)],
@@ -589,6 +619,10 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     derived.push(
       ['elevationZoom', 'Elevation tile zoom', model.zoom],
       ['metresPerPixel', 'Elevation detail (m per pixel)', Math.round(model.pixelM)],
+      ...(model.seaZoom != null ? [
+        ['seaFloorZoom', 'Sea floor tile zoom', model.seaZoom],
+        ['seaFloorMetresPerPixel', 'Sea floor detail (m per pixel)', Math.round(model.seaPixelM)],
+      ] : []),
       ['gridSpacingM', 'Grid spacing (m)', Math.round((set.sideKm * 1000) / (set.cells - 1))],
       ['lowestM', 'Lowest point (m)', Math.round(model.lowM)],
       ['highestM', 'Highest point (m)', Math.round(model.highM)],
@@ -648,14 +682,18 @@ export function parsePrintKml(text) {
     if (values[k] == null || !Number.isFinite(v) || v < lo || v > hi) throw new Error(`the file's ${k} is missing or out of range`);
     return v;
   };
+  const exaggeration = num('heightStretch', 0.1, 100);
   return {
     centre: { name: values.centreName || 'Saved print', lat: num('centreLat', -85, 85), lon: num('centreLon', -180, 180) },
     set: {
       sideKm: num('squareKm', 0.1, 1000),
       widthMm: num('modelWidthMm', 10, 1000),
       cells: Math.round(num('gridCells', 10, 1000)),
-      exaggeration: num('heightStretch', 0.1, 100),
+      exaggeration,
       baseMm: num('baseMm', 0, 100),
+      // files from before the sea floor cut it at sea level
+      seaFloorM: values.seaFloorM == null ? 0 : num('seaFloorM', 0, 11100),
+      depthStretch: values.depthStretch == null ? exaggeration : num('depthStretch', 0.1, 100),
     },
   };
 }

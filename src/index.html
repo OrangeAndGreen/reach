@@ -199,8 +199,25 @@
             <option value="5">5 mm</option>
           </select>
         </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="print-sea">Sea floor</label>
+          <select id="print-sea">
+            <option value="0" selected>Cut at sea level</option>
+            <option value="50">Down to 50 m</option>
+            <option value="200">Down to 200 m</option>
+            <option value="1000">Down to 1,000 m</option>
+            <option value="11000">Full depth</option>
+          </select>
+        </div>
+        <div id="print-depth-field" class="field" hidden>
+          <label for="print-depth">Depth stretch <span id="print-depth-value"></span></label>
+          <input id="print-depth" type="range" min="1" max="20" step="0.5" value="3">
+        </div>
         <button id="print-run" class="primary">Build model</button>
       </div>
+      <p id="print-sea-hint" class="hint" hidden>The sea floor comes from coarser tiles than the land (75 to 150 m per pixel, by latitude), so it prints softer. Lakes print as their flat surface.</p>
       <div id="print-status" class="status" aria-live="polite"></div>
 
       <figure class="chart-wrap">
