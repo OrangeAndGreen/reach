@@ -28,6 +28,11 @@ npm start        # http://localhost:8732
 npm test
 ```
 
+On an Android phone plugged in over adb, `adb reverse tcp:8732 tcp:8732` makes
+the PC's server answer at http://localhost:8732 on the phone, and Chrome then
+offers to install Reach as an app. The app still needs the PC serving it and
+the reverse in place.
+
 No install step. The page loads Leaflet, d3 and three.js from CDNs, and its own code as
 ES modules, which is why it needs the little server rather than file://.
 
