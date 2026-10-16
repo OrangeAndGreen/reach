@@ -19,7 +19,9 @@ Three tools on one map:
   Earth along with every setting (centre, size, width, detail, stretch, base)
   and what came of them (tile zoom, metres per pixel, lowest and highest point,
   model height, scale, triangle count, STL file name). **Open KML** reads one
-  back and builds the same STL again.
+  back and builds the same STL again. **Download map image** saves the map
+  layer on show (Terrain or Streets) cropped to the square, as a PNG of up to
+  2,048 px with the map's credit in the corner.
 
 All three started as ideas parked in ViggiPy's `TODO.txt`: the
 distance-to-height graph (Miami, Boston, Cape Town), the drive-distance graph

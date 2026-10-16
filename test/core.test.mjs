@@ -61,6 +61,26 @@ test('profile keeps the running maximum and where it is', () => {
   assert.equal(core.summitWithin(pts, 50).metres, 300);
 });
 
+test('map image: the square fits the pixel budget and its tiles cover it', () => {
+  const b = core.squareBounds(boston, 10);
+  const z = core.mapImageZoom(b, 17);
+  const box = core.pixelBox(b, z);
+  assert.ok(box.width <= 2048 && core.pixelBox(b, z + 1).width > 2048, `zoom ${z} is not the finest that fits`);
+  near(box.width / box.height, 1, 0.01); // a km square is square on a mercator map
+  const left = Math.min(...box.tiles.map((t) => t.left)), top = Math.min(...box.tiles.map((t) => t.top));
+  const right = Math.max(...box.tiles.map((t) => t.left + 256)), bottom = Math.max(...box.tiles.map((t) => t.top + 256));
+  assert.ok(left <= box.left && top <= box.top && right >= box.left + box.width && bottom >= box.top + box.height);
+  assert.ok(right - (box.left + box.width) < 256 && box.left - left < 256, 'no spare column of tiles');
+  assert.equal(core.mapImageZoom(core.squareBounds(boston, 2), 12), 12); // capped by the layer's zoom
+});
+
+test('map image: a square across the date line wraps its tile numbers', () => {
+  const box = core.pixelBox(core.squareBounds({ lat: -17, lon: 179.99 }, 20), 8);
+  const xs = new Set(box.tiles.map((t) => t.x));
+  assert.ok(xs.has(255) && xs.has(0));
+  assert.ok(box.tiles.every((t) => t.x >= 0 && t.x < 256));
+});
+
 test('table rings: one radius per height reached, one summit per distinct point', () => {
   const p = core.makeProfile(boston, 100, 10);
   const east = (km) => ({ lon: boston.lon + km / core.kmPerDegree(boston.lat).lon, lat: boston.lat });

@@ -506,6 +506,31 @@ export function squareBounds(center, sideKm) {
   return { west: center.lon - dLon, east: center.lon + dLon, south: center.lat - dLat, north: center.lat + dLat };
 }
 
+/**
+ * A lon/lat box in global pixels at zoom z (256 per tile), and the tiles that
+ * cover it, each with its own top-left in the same pixels. Tile x wraps across
+ * the date line; left keeps the unwrapped position so tiles still line up.
+ */
+export function pixelBox(bounds, z) {
+  const nw = lonLatToTile(bounds.west, bounds.north, z);
+  const se = lonLatToTile(bounds.east, bounds.south, z);
+  const n = 2 ** z;
+  const tiles = [];
+  for (let ty = Math.max(0, Math.floor(nw.y)); ty <= Math.min(n - 1, Math.floor(se.y - 1e-9)); ty++) {
+    for (let tx = Math.floor(nw.x); tx <= Math.floor(se.x - 1e-9); tx++) {
+      tiles.push({ x: ((tx % n) + n) % n, y: ty, z, left: tx * 256, top: ty * 256 });
+    }
+  }
+  return { left: nw.x * 256, top: nw.y * 256, width: (se.x - nw.x) * 256, height: (se.y - nw.y) * 256, tiles };
+}
+
+/** The most detailed zoom, up to maxZoom, at which the box is at most maxPx wide. */
+export function mapImageZoom(bounds, maxZoom, maxPx = 2048) {
+  let z = maxZoom;
+  while (z > 1 && pixelBox(bounds, z).width > maxPx) z--;
+  return z;
+}
+
 /** The zoom whose pixels are at least as fine as the model's grid, within a tile budget. */
 export function printZoom(center, sideKm, cells, maxTiles = 64) {
   const want = (sideKm * 1000) / cells;
