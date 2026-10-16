@@ -309,6 +309,46 @@ test('print heights scale to millimetres over a base', () => {
   near(p.reliefMm, 20, 1e-9);
 });
 
+test('print heights: the sea floor goes down to its limit, with its own stretch', () => {
+  const set = { sideKm: 10, widthMm: 100, exaggeration: 2, baseMm: 3, seaFloorM: 200, depthStretch: 5 };
+  const p = core.printHeights([-500, -100, 0, 1000], set);
+  assert.equal(p.lowM, -200);
+  assert.equal(p.highM, 1000);
+  // 0.01 mm per m: 200 m of depth at x5 is 10 mm, 1000 m of height at x2 is 20 mm
+  assert.deepEqual(p.mm.map((v) => +v.toFixed(9)), [3, 8, 13, 33]);
+  near(p.reliefMm, 30, 1e-9);
+  near(p.seaMm, 13, 1e-9);
+  assert.equal(core.printHeights([0, 50], set).seaMm, null);
+});
+
+test('print heights: depth stretch follows the height stretch unless given', () => {
+  const p = core.printHeights([-100, 100], { sideKm: 10, widthMm: 100, exaggeration: 3, baseMm: 0, seaFloorM: 11000 });
+  near(p.reliefMm, 6, 1e-9);
+});
+
+test('the sea floor fills in under sea level, and land keeps its detail', () => {
+  const fine = [120, 0, 0, -4, 0];
+  const coarse = [80, -30, 15, -2, -657];
+  // land, sea, the coarse blend at a coast (stays 0), a polder deeper than its blend, canyon
+  assert.deepEqual(core.withSeaFloor(fine, coarse), [120, -30, 0, -4, -657]);
+});
+
+test('despike fills a lone pit where the sources meet, and keeps a real basin', () => {
+  const size = 5;
+  const beach = new Float32Array(size * size).fill(4);
+  beach[2 * size + 2] = -4348; // seen at Monterey, zoom 11
+  assert.ok(core.despike(beach, size)[2 * size + 2] > 0);
+
+  const basin = Float32Array.from([
+    -100, -200, -300, -200, -100,
+    -200, -400, -600, -400, -200,
+    -300, -600, -900, -600, -300,
+    -200, -400, -600, -400, -200,
+    -100, -200, -300, -200, -100,
+  ]);
+  assert.deepEqual(Array.from(core.despike(basin, size)), Array.from(basin));
+});
+
 test('terrain STL is closed: every edge shared by exactly two triangles', () => {
   const n = 5;
   const z = Array.from({ length: n * n }, (_, k) => 3 + (k % 7));
@@ -339,7 +379,7 @@ test('terrain STL faces outward: top normals point up, bottom down', () => {
 
 test('a print KML carries the square, the settings and the model figures', () => {
   const centre = { name: 'Mount Washington, New Hampshire', lat: 44.2706, lon: -71.3033 };
-  const set = { sideKm: 20, widthMm: 120, cells: 200, exaggeration: 1.5, baseMm: 3 };
+  const set = { sideKm: 20, widthMm: 120, cells: 200, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5 };
   const model = { zoom: 12, pixelM: 27.8, lowM: 410, highM: 1916, reliefMm: 13.55, triangles: 81590 };
   const kml = core.printKml({ centre, set, model, stlFile: 'reach-mount-washington-20km.stl', made: new Date('2026-10-15T12:00:00Z') });
   assert.match(kml, /<Data name="heightStretch"><displayName>Height stretch \(x\)<\/displayName><value>1.5<\/value><\/Data>/);
@@ -361,7 +401,7 @@ test('a print KML carries the square, the settings and the model figures', () =>
 
 test('a print KML round-trips awkward names, and works without a model', () => {
   const centre = { name: 'Rock & "Roll" <Hills>', lat: -33.9, lon: 18.4 };
-  const set = { sideKm: 5, widthMm: 80, cells: 120, exaggeration: 10, baseMm: 2 };
+  const set = { sideKm: 5, widthMm: 80, cells: 120, exaggeration: 10, baseMm: 2, seaFloorM: 1000, depthStretch: 4 };
   const kml = core.printKml({ centre, set });
   assert.match(kml, /Rock &amp; &quot;Roll&quot; &lt;Hills&gt;/);
   assert.doesNotMatch(kml, /metresPerPixel/);
@@ -373,4 +413,23 @@ test('parsePrintKml refuses other KML and bad values', () => {
   assert.throws(() => core.parsePrintKml(drive), /not saved from Reach/);
   const good = core.printKml({ centre: { name: 'a', lat: 1, lon: 2 }, set: { sideKm: 5, widthMm: 80, cells: 120, exaggeration: 2, baseMm: 2 } });
   assert.throws(() => core.parsePrintKml(good.replace('<value>120</value>', '<value>lots</value>')), /gridCells/);
+});
+
+test('a print KML from before the sea floor opens as cut at sea level', () => {
+  const kml = core.printKml({ centre: { name: 'a', lat: 1, lon: 2 }, set: { sideKm: 5, widthMm: 80, cells: 120, exaggeration: 2, baseMm: 2 } })
+    .replace(/<Data name="seaFloorM">.*?<\/Data>/, '<Data name="seaCutToZero"><displayName>Sea floor cut to sea level</displayName><value>yes</value></Data>')
+    .replace(/\s*<Data name="depthStretch">.*?<\/Data>/, '');
+  assert.doesNotMatch(kml, /seaFloorM/);
+  const { set } = core.parsePrintKml(kml);
+  assert.equal(set.seaFloorM, 0);
+  assert.equal(set.depthStretch, 2);
+});
+
+test('a print KML records where the sea floor was read', () => {
+  const set = { sideKm: 20, widthMm: 120, cells: 200, exaggeration: 1.5, baseMm: 3, seaFloorM: 200, depthStretch: 3 };
+  const model = { zoom: 12, pixelM: 27.8, seaZoom: 10, seaPixelM: 111.2, lowM: -200, highM: 300, reliefMm: 4.5, triangles: 100 };
+  const kml = core.printKml({ centre: { name: 'Monterey', lat: 36.6, lon: -121.9 }, set, model });
+  assert.match(kml, /<Data name="seaFloorZoom">.*<value>10<\/value>/);
+  assert.match(kml, /<Data name="seaFloorMetresPerPixel">.*<value>111<\/value>/);
+  assert.match(kml, /<Data name="seaFloorM">.*<value>200<\/value>/);
 });

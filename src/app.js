@@ -130,6 +130,10 @@ function setUnits(units) {
   state.units = units;
   for (const b of document.querySelectorAll('.units button')) b.setAttribute('aria-pressed', String(b.dataset.units === units));
   for (const o of $('radius').options) o.textContent = core.formatDistance(Number(o.value), units).replace(/\.0 /, ' ');
+  for (const o of $('print-sea').options) {
+    const m = Number(o.value);
+    if (m > 0 && m < 11000) o.textContent = `Down to ${core.formatHeight(m, units)}`;
+  }
   renderHeight();
   renderDrive();
   renderPrintTable();
@@ -683,6 +687,8 @@ function printSettings() {
     cells: Number($('print-cells').value),
     exaggeration: Number($('print-exag').value),
     baseMm: Number($('print-base').value),
+    seaFloorM: Number($('print-sea').value),
+    depthStretch: Number($('print-depth').value),
   };
 }
 
@@ -725,6 +731,34 @@ function sampler(tiles, z) {
   };
 }
 
+/**
+ * The print square's n x n grid of heights (row 0 north), sampled from the
+ * zoom-z tiles. Returns null when a newer build has started meanwhile.
+ */
+async function readPrintGrid(centre, set, z, run, what) {
+  const list = core.tilesForRadius(centre, set.sideKm * 0.71, z);
+  const tiles = new Map();
+  let done = 0;
+  await Promise.all(list.map(async (t) => {
+    tiles.set(`${t.z}/${t.x}/${t.y}`, await elevationTile(t.z, t.x, t.y));
+    if (run === modelRun) progress('print', `Reading the ${what}: tile ${++done} of ${list.length}`, done / list.length);
+  }));
+  if (run !== modelRun) return null;
+  const b = core.squareBounds(centre, set.sideKm);
+  const at = sampler(tiles, z);
+  const n = set.cells;
+  const heights = new Array(n * n);
+  for (let j = 0; j < n; j++) {
+    const lat = b.north - (j / (n - 1)) * (b.north - b.south);
+    for (let i = 0; i < n; i++) {
+      const lon = b.west + (i / (n - 1)) * (b.east - b.west);
+      const p = core.lonLatToTile(lon, lat, z);
+      heights[j * n + i] = at(p.x * 256, p.y * 256);
+    }
+  }
+  return heights;
+}
+
 let modelRun = 0;
 async function buildModel() {
   const run = ++modelRun;
@@ -733,31 +767,25 @@ async function buildModel() {
   $('print-run').disabled = true;
   try {
     const z = core.printZoom(centre, set.sideKm, set.cells);
-    const list = core.tilesForRadius(centre, set.sideKm * 0.71, z);
-    const tiles = new Map();
-    let done = 0;
-    await Promise.all(list.map(async (t) => {
-      tiles.set(`${t.z}/${t.x}/${t.y}`, await elevationTile(t.z, t.x, t.y));
-      if (run === modelRun) progress('print', `Reading the terrain: tile ${++done} of ${list.length}`, done / list.length);
-    }));
-    if (run !== modelRun) return;
-    const b = core.squareBounds(centre, set.sideKm);
-    const at = sampler(tiles, z);
-    const n = set.cells;
-    const heights = new Array(n * n);
-    for (let j = 0; j < n; j++) {
-      const lat = b.north - (j / (n - 1)) * (b.north - b.south);
-      for (let i = 0; i < n; i++) {
-        const lon = b.west + (i / (n - 1)) * (b.east - b.west);
-        const p = core.lonLatToTile(lon, lat, z);
-        heights[j * n + i] = at(p.x * 256, p.y * 256);
-      }
+    let heights = await readPrintGrid(centre, set, z, run, 'terrain');
+    if (!heights) return;
+    // Past zoom 10 the tiles have no sea floor, so it comes from zoom 10, under the detailed land.
+    const seaZoom = set.seaFloorM > 0 ? Math.min(z, core.SEA_FLOOR_ZOOM) : null;
+    if (seaZoom != null && seaZoom < z) {
+      const floor = await readPrintGrid(centre, set, seaZoom, run, 'sea floor');
+      if (!floor) return;
+      heights = core.withSeaFloor(heights, floor);
     }
+    const n = set.cells;
     const scaled = core.printHeights(heights, set);
     const stl = core.terrainStl(scaled.mm, n, set.widthMm);
-    state.model = { stl, scaled, set, centre, zoom: z, pixel: core.pixelMetres(centre.lat, z) };
+    state.model = {
+      stl, scaled, set, centre, zoom: z, pixel: core.pixelMetres(centre.lat, z),
+      seaZoom, seaPixel: seaZoom == null ? null : core.pixelMetres(centre.lat, seaZoom),
+    };
     showModel();
-    status('print', `Terrain read at ${Math.round(state.model.pixel)} m per pixel and sampled on a ${n} × ${n} grid.`);
+    const sea = seaZoom != null && seaZoom < z ? `, the sea floor at ${Math.round(state.model.seaPixel)} m,` : '';
+    status('print', `Terrain read at ${Math.round(state.model.pixel)} m per pixel${sea} and sampled on a ${n} × ${n} grid.`);
     $('print-stl').disabled = false;
     $('print-kml').disabled = false;
   } catch (err) {
@@ -772,6 +800,16 @@ $('print-exag').addEventListener('input', () => { $('print-exag-value').textCont
 $('print-exag').addEventListener('change', buildModel);
 for (const id of ['print-width', 'print-cells', 'print-base']) $(id).addEventListener('change', buildModel);
 $('print-exag-value').textContent = `× ${$('print-exag').value}`;
+function showSeaControls() {
+  const on = Number($('print-sea').value) > 0;
+  $('print-depth-field').hidden = !on;
+  $('print-sea-hint').hidden = !on;
+  $('print-depth-value').textContent = `× ${$('print-depth').value}`;
+}
+$('print-sea').addEventListener('change', () => { showSeaControls(); buildModel(); });
+$('print-depth').addEventListener('input', showSeaControls);
+$('print-depth').addEventListener('change', buildModel);
+showSeaControls();
 
 let viewer = null;
 function showModel() {
@@ -818,10 +856,19 @@ function showModel() {
   const geom = new THREE.BufferGeometry();
   geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geom.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  // The sea floor in blue: top-surface vertices below sea level (the top comes first in the STL).
+  const colours = new Float32Array(count * 9);
+  const land = new THREE.Color(0xc9b79c), sea = new THREE.Color(0x6f9bc7);
+  const topVertices = 2 * (m.set.cells - 1) ** 2 * 3;
+  for (let v = 0; v < count * 3; v++) {
+    const c = m.scaled.seaMm != null && v < topVertices && pos[v * 3 + 2] < m.scaled.seaMm - 1e-3 ? sea : land;
+    colours[v * 3] = c.r; colours[v * 3 + 1] = c.g; colours[v * 3 + 2] = c.b;
+  }
+  geom.setAttribute('color', new THREE.BufferAttribute(colours, 3));
   geom.rotateX(-Math.PI / 2); // STL is z-up, three is y-up: north (+y) becomes -z, away from the camera
   geom.translate(-m.set.widthMm / 2, 0, m.set.widthMm / 2);
   if (viewer.mesh) { viewer.scene.remove(viewer.mesh); viewer.mesh.geometry.dispose(); }
-  viewer.mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ color: 0xc9b79c, roughness: 0.85, metalness: 0 }));
+  viewer.mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0 }));
   viewer.scene.add(viewer.mesh);
   const w = m.set.widthMm;
   viewer.camera.position.set(0, w * 0.95, w * 1.35);
@@ -842,9 +889,17 @@ function renderPrintTable() {
     ['Lowest to highest', `${core.formatHeight(scaled.lowM, state.units)} to ${core.formatHeight(scaled.highM, state.units)}`],
     ['Map scale', `1 : ${scale.toLocaleString('en-US')}`],
     ['Height stretch', `× ${set.exaggeration}, so 1 mm of model is ${core.formatHeight(1 / (scaled.mmPerMetre * set.exaggeration), state.units)}`],
+    ...(set.seaFloorM > 0 ? [['Sea floor', seaFloorText(set, scaled)]] : []),
     ['STL', `${(m.stl.byteLength / 1048576).toFixed(1)} MB, ${new DataView(m.stl).getUint32(80, true).toLocaleString('en-US')} triangles`],
   ];
   $('print-table').innerHTML = `<tbody>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</tbody>`;
+}
+
+function seaFloorText(set, scaled) {
+  const limit = set.seaFloorM >= 11000 ? 'Full depth' : `Down to ${core.formatHeight(set.seaFloorM, state.units)}`;
+  const stretch = `× ${set.depthStretch}, so 1 mm of model is ${core.formatHeight(1 / (scaled.mmPerMetre * set.depthStretch), state.units)}`;
+  const level = scaled.seaMm != null ? `sea level is ${scaled.seaMm.toFixed(1)} mm up` : 'nothing here is below sea level';
+  return `${limit} at ${stretch}; ${level}`;
 }
 
 function printFileName(m, ext) {
@@ -864,7 +919,7 @@ $('print-kml').addEventListener('click', () => {
   const kml = core.printKml({
     centre: m.centre,
     set: m.set,
-    model: { zoom: m.zoom, pixelM: m.pixel, lowM: m.scaled.lowM, highM: m.scaled.highM, reliefMm: m.scaled.reliefMm, triangles: new DataView(m.stl).getUint32(80, true) },
+    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.scaled.lowM, highM: m.scaled.highM, reliefMm: m.scaled.reliefMm, triangles: new DataView(m.stl).getUint32(80, true) },
     stlFile: printFileName(m, 'stl'),
   });
   download(printFileName(m, 'kml'), kml, 'application/vnd.google-earth.kml+xml');
@@ -940,6 +995,11 @@ $('print-file').addEventListener('change', async () => {
   if (set.exaggeration > Number(exag.max)) exag.max = String(set.exaggeration);
   exag.value = String(set.exaggeration);
   $('print-exag-value').textContent = `× ${exag.value}`;
+  choose('print-sea', set.seaFloorM, `Down to ${core.formatHeight(set.seaFloorM, state.units)}`);
+  const depth = $('print-depth');
+  if (set.depthStretch > Number(depth.max)) depth.max = String(set.depthStretch);
+  depth.value = String(set.depthStretch);
+  showSeaControls();
   setPrintCentre(centre);
   status('print', `Opened ${file.name}. Building the same model.`);
 });

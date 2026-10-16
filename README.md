@@ -13,10 +13,11 @@ Three tools on one map:
   KML** saves the bands and their placemarks for Google Earth.
 - **Print**: a square of real terrain (2 to 160 km across) as a closed binary
   STL for the slicer. Choose the model width, the detail, a height stretch and
-  the base thickness. A preview you can turn shows the model, beside its real
+  the base thickness, and whether the sea floor comes too (down to 50 m, 200 m,
+  1,000 m or all the way, with its own depth stretch). A preview you can turn shows the model, beside its real
   dimensions and scale. The default is the 20 km around Mt Washington:
   120 × 120 × 17.6 mm at ×1.5. **Download KML** saves the square for Google
-  Earth along with every setting (centre, size, width, detail, stretch, base)
+  Earth along with every setting (centre, size, width, detail, stretch, base, sea floor)
   and what came of them (tile zoom, metres per pixel, lowest and highest point,
   model height, scale, triangle count, STL file name). **Open KML** reads one
   back and builds the same STL again. **Download map image** saves the map
@@ -82,7 +83,16 @@ ES modules, which is why it needs the little server rather than file://.
   to about 75 km.
 - **Print** samples the terrain bilinearly on an n×n grid, from the most
   detailed zoom whose pixels are at least twice as fine as a grid cell (64 tiles
-  at most). The sea is cut to sea level. The mesh is the terrain, four walls and
+  at most). The sea is cut to sea level unless the sea floor is asked for.
+- **Sea floor.** The tiles only carry it up to zoom 10 (75 to 150 m a pixel,
+  by latitude). From zoom 11 every sea pixel reads 0: Monterey Canyon is
+  -657 m at zoom 10 and 0 at zoom 11. So a print reads the land at its own
+  zoom and the sea floor at zoom 10, and where the detailed reading is at or
+  below sea level the deeper of the two wins. Where the two sources meet, the
+  odd pixel drops far below its neighbours (-4,348 m beside 4 m of beach at
+  Monterey), so despiking flattens lone pits the same way it flattens spikes.
+  Lakes are their flat surface at every zoom, and fjords barely show
+  (Oslofjord is about -5 m). The mesh is the terrain, four walls and
   a bottom fanned from its centre. A test checks that every edge is shared by
   exactly two triangles and wound consistently, so it is watertight.
 - OSRM times are free-flow with no traffic or stops, and its car speeds are
