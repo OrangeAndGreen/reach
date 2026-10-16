@@ -185,11 +185,13 @@ td.none { color: var(--ink-3); }
 }
 .peak-pin { font-size: 18px; line-height: 1; text-align: center; color: #5a2e0c; text-shadow: 0 0 3px #fff, 0 0 3px #fff; }
 
+/* Phone: the map stays pinned above and the panel scrolls on its own, so a swipe
+   on the map pans it and a swipe on the panel reaches the graphs. */
 @media (max-width: 820px) {
-  body { height: auto; }
-  .layout { grid-template-columns: 1fr; }
-  .panel { border-right: 0; border-bottom: 1px solid var(--rule); overflow: visible; padding-right: max(16px, env(safe-area-inset-right, 0px)); }
-  .map-wrap { height: 70vh; order: -1; }
+  body { height: 100dvh; }
+  .layout { grid-template-columns: 1fr; grid-template-rows: 40% 1fr; }
+  .panel { border-right: 0; border-top: 1px solid var(--rule); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-bottom: max(32px, env(safe-area-inset-bottom, 0px)); }
+  .map-wrap { order: -1; }
   .units { margin-left: 0; }
 }
 @media (prefers-reduced-motion: reduce) { .progress > div { transition: none; } }

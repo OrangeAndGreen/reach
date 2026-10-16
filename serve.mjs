@@ -17,7 +17,10 @@ const TYPES = {
   '.css': 'text/css; charset=utf-8',
   '.woff2': 'font/woff2',
   '.txt': 'text/plain; charset=utf-8',
-  '.json': 'application/json'
+  '.json': 'application/json',
+  '.webmanifest': 'application/manifest+json',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png'
 };
 
 http.createServer((req, res) => {
