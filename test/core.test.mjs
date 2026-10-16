@@ -202,6 +202,56 @@ test('despike removes lone glitches and keeps real peaks', () => {
   assert.deepEqual(Array.from(core.despike(mountain, size)), Array.from(mountain));
 });
 
+test('impossible heights decode as missing', () => {
+  assert.ok(Number.isNaN(core.terrariumElevation(255, 255, 255))); // white: 32,767 m
+  assert.ok(Number.isNaN(core.terrariumElevation(0, 0, 0)));       // black: -32,768 m
+  assert.equal(core.terrariumElevation(162, 145, 0), 8849);         // Everest still counts
+});
+
+test('despike flattens a one-pixel streak', () => {
+  // The Port Everglades column, as read from the zoom-12 tile.
+  const streak = Float32Array.from([
+    1, 11, -50, 99, 5,
+    1, 9, -50, 103, 6,
+    19, 9, -80, 151, 6,
+    0, 10, -86, 181, 7,
+    18, 10, -55, 149, 6,
+  ]);
+  const clean = core.despike(streak, 5);
+  for (let y = 0; y < 5; y++) assert.ok(clean[y * 5 + 3] < 20, `row ${y}: ${clean[y * 5 + 3]}`);
+
+  // A sharp alpine ridge, one pixel wide, survives.
+  const ridge = new Float32Array(25).fill(3800);
+  for (let y = 0; y < 5; y++) ridge[y * 5 + 2] = 4100;
+  assert.deepEqual(Array.from(core.despike(ridge, 5)), Array.from(ridge));
+});
+
+test('despike fills a patch of missing pixels from its neighbours', () => {
+  const size = 5;
+  const tile = new Float32Array(size * size).fill(3);
+  for (const k of [6, 7, 8, 11, 12, 13]) tile[k] = NaN; // a 3x2 no-data patch near Miami
+  const clean = core.despike(tile, size);
+  assert.ok(clean.every((v) => Number.isFinite(v) && v <= 3));
+  assert.deepEqual(Array.from(core.despike(new Float32Array(9).fill(NaN), 3)), new Array(9).fill(0));
+});
+
+test('a close-up reading replaces a coarse glitch', () => {
+  const centre = { lon: 0, lat: 0 };
+  const profile = core.makeProfile(centre, 100, 100);
+  core.addSample(profile, 0.1, 0, 40);   // real ground, 11 km out
+  core.addSample(profile, 0.5, 0, 1304); // a glitch patch, 56 km out
+  const glitch = core.finishProfile(profile).at(-1).at;
+  assert.equal(core.finishProfile(profile).at(-1).max, 1304);
+  core.replacePeak(profile, glitch, { lon: 0.5, lat: 0, metres: 12 });
+  assert.equal(core.finishProfile(profile).at(-1).max, 40);
+
+  // and a real summit reads higher up close
+  core.addSample(profile, 0.7, 0, 900);
+  const coarse = core.finishProfile(profile).at(-1).at;
+  core.replacePeak(profile, coarse, { lon: 0.7001, lat: 0, metres: 965 });
+  assert.equal(core.finishProfile(profile).at(-1).max, 965);
+});
+
 test('square bounds are sideKm across', () => {
   const b = core.squareBounds(boston, 20);
   near(core.haversineKm({ lat: boston.lat, lon: b.west }, { lat: boston.lat, lon: b.east }), 20, 0.1);

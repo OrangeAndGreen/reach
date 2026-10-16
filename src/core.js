@@ -77,9 +77,14 @@ export function pickZoom(center, radiusKm, maxTiles = 120, minZoom = 3, maxZoom 
   return minZoom;
 }
 
-/** Elevation in metres from one pixel of a Terrarium-encoded tile. */
+/**
+ * Elevation in metres from one pixel of a Terrarium-encoded tile, or NaN for a
+ * height no place on Earth has. The tiles mark missing data with white pixels,
+ * which decode to 32,767 m, and they come in patches, not lone pixels.
+ */
 export function terrariumElevation(r, g, b) {
-  return r * 256 + g + b / 256 - 32768;
+  const m = r * 256 + g + b / 256 - 32768;
+  return m > 8900 || m < -11100 ? NaN : m;
 }
 
 /**
@@ -88,7 +93,11 @@ export function terrariumElevation(r, g, b) {
  * water), and a "highest point" tool finds every one of them. A pixel that
  * stands more than its own height clear of the third-highest value in its
  * 3x3 block (and at least 60 m) is replaced by that third-highest value. Real
- * peaks pass, because their neighbours are high too.
+ * peaks pass, because their neighbours are high too. The same test runs
+ * across each pixel's left and right neighbours and its upper and lower ones,
+ * which catches one-pixel streaks (181 m at the Port Everglades channel).
+ * A missing (NaN) pixel takes the highest valid value around it, or 0 when
+ * there is none.
  */
 export function despike(elev, size = 256) {
   const out = Float32Array.from(elev);
@@ -103,13 +112,22 @@ export function despike(elev, size = 256) {
           const xx = x + dx;
           if (xx < 0 || xx >= size) continue;
           const v = elev[yy * size + xx];
+          if (Number.isNaN(v)) continue;
           n++;
           if (v > a) { c = b; b = a; a = v; } else if (v > b) { c = b; b = v; } else if (v > c) c = v;
         }
       }
-      const third = n >= 3 ? c : b;
       const e = elev[y * size + x];
-      if (e - third > Math.max(60, Math.abs(third))) out[y * size + x] = third;
+      if (Number.isNaN(e)) { out[y * size + x] = n ? a : 0; continue; }
+      const spike = (ref) => ref > -Infinity && e - ref > Math.max(60, Math.abs(ref));
+      const third = n >= 3 ? c : b;
+      if (spike(third)) { out[y * size + x] = third; continue; }
+      const at = (xx, yy) => (xx < 0 || yy < 0 || xx >= size || yy >= size ? NaN : elev[yy * size + xx]);
+      for (const [p, q] of [[at(x - 1, y), at(x + 1, y)], [at(x, y - 1), at(x, y + 1)]]) {
+        if (Number.isNaN(p) || Number.isNaN(q)) continue;
+        const ref = Math.max(p, q);
+        if (spike(ref)) { out[y * size + x] = ref; break; }
+      }
     }
   }
   return out;
@@ -146,6 +164,22 @@ export function addSample(profile, lon, lat, elevation) {
     profile.ringMax[bin] = elevation;
     profile.ringAt[bin] = { lon, lat, km: d };
   }
+}
+
+/**
+ * Swaps a coarse find for its close-up reading. The zoom-12 re-read is the
+ * truth: a real summit only reads higher up close, so one that reads far
+ * lower was a glitch patch in the coarse tile (1,304 m in Massachusetts,
+ * 3,458 m in the sea off Wellington) and must not keep its ring.
+ */
+export function replacePeak(profile, at, top) {
+  const bin = Math.min(profile.bins - 1, Math.floor((at.km / profile.radiusKm) * profile.bins));
+  const was = profile.ringAt[bin];
+  if (was && was.lon === at.lon && was.lat === at.lat) {
+    profile.ringMax[bin] = -Infinity;
+    profile.ringAt[bin] = null;
+  }
+  addSample(profile, top.lon, top.lat, top.metres);
 }
 
 /**

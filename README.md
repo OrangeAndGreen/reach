@@ -4,7 +4,7 @@ How high, and how far, you can get from a place, and a piece of it to print.
 Three tools on one map:
 
 - **Height**: for each distance from a place, the highest ground anywhere
-  within it. Compare up to four places on one graph. Boston climbs gradually to
+  within it. Compare up to eight places on one graph. Boston climbs gradually to
   Mt Washington (1,916 m, 213 km out). Cape Town is at 1,000 m within 5 km. Miami
   has to cross to Cuba.
 - **Drive**: drive-time contours (4, 8, 12 hours by default) from one start,

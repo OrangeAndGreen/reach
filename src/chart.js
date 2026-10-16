@@ -22,6 +22,14 @@ export function lineChart(el, opts) {
   render(el, opts);
 }
 
+/** Bring one series forward and fade the rest; null clears it. */
+export function focusSeries(el, name) {
+  const svg = el.querySelector('svg');
+  if (!svg) return;
+  svg.classList.toggle('has-focus', name != null);
+  for (const path of svg.querySelectorAll('.series')) path.classList.toggle('focused', path.dataset.name === name);
+}
+
 function render(el, opts) {
   el.innerHTML = '';
   const series = opts.series.filter((s) => s.points.some((p) => p.y != null));
@@ -34,7 +42,9 @@ function render(el, opts) {
   }
   const W = el.clientWidth || 400;
   const H = el.clientHeight || 260;
-  const labelRoom = series.length > 1 ? 74 : 12;
+  // Past four lines the end labels would pile up, so the legend and tooltip carry the names.
+  const labelled = series.length > 1 && series.length <= 4;
+  const labelRoom = labelled ? 74 : 12;
   const m = { top: 10, right: labelRoom, bottom: 38, left: 56 };
 
   const all = series.flatMap((s) => s.points.filter((p) => p.y != null));
@@ -70,11 +80,11 @@ function render(el, opts) {
 
   for (const s of series) {
     if (s.faint) svg.append('path').attr('class', 'ring-series').attr('stroke', s.color).attr('d', line(s.faint));
-    svg.append('path').attr('class', 'series').attr('stroke', s.color).attr('d', line(s.points));
+    svg.append('path').attr('class', 'series').attr('stroke', s.color).attr('data-name', s.name).attr('d', line(s.points));
   }
 
   // Direct labels at each line's end, nudged apart so they never overlap.
-  if (series.length > 1) {
+  if (labelled) {
     const ends = series.map((s) => {
       const last = [...s.points].reverse().find((p) => p.y != null);
       return { s, x: x(last.x), y: y(last.y) };

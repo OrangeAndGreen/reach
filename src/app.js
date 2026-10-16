@@ -1,15 +1,15 @@
 // app.js - Reach's page: the map, the two tools and their network calls.
 // The maths lives in core.js; this file fetches, wires and draws.
 import * as core from './core.js';
-import { lineChart } from './chart.js';
+import { lineChart, focusSeries } from './chart.js';
 
 const TERRARIUM = (z, x, y) => `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
 const OSRM = 'https://router.project-osrm.org/table/v1/driving/';
 const GEOCODE = 'https://geocoding-api.open-meteo.com/v1/search';
 const REVERSE = 'https://nominatim.openstreetmap.org/reverse';
-const MAX_PLACES = 4;
+const MAX_PLACES = 8;
 const BATCH = 299; // destinations per OSRM call, plus the start
-const SERIES = ['--s1', '--s2', '--s3', '--s4'];
+const SERIES = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8'];
 const BANDS = ['#1c5cab', '#3987e5', '#86b6ef', '#b7d3f6']; // map overlays sit on light tiles in either theme
 const BAND_LINE = '#0d366b';
 
@@ -249,11 +249,11 @@ function placeColor(p) { return cssVar(SERIES[p.slot]); }
 
 function addPlace(place) {
   if (state.places.length >= MAX_PLACES) {
-    status('height', `Four places at most. Remove one to add ${place.name}.`, true);
+    status('height', `Eight places at most. Remove one to add ${place.name}.`, true);
     return;
   }
   const used = new Set(state.places.map((p) => p.slot));
-  const slot = [0, 1, 2, 3].find((s) => !used.has(s));
+  const slot = SERIES.findIndex((_, s) => !used.has(s));
   state.places.push({ ...place, slot });
   renderPlaces();
   saveSettings();
@@ -273,9 +273,11 @@ function renderPlaces() {
   state.places.forEach((p, k) => {
     const li = document.createElement('li');
     li.innerHTML = `<span class="swatch" style="background:${placeColor(p)}"></span>
-      <span><span class="name">${escapeHtml(p.name)}</span><br><span class="coords">${p.lat.toFixed(3)}, ${p.lon.toFixed(3)}</span></span>
+      <span class="name">${escapeHtml(p.name)}</span><span class="coords">${p.lat.toFixed(2)}, ${p.lon.toFixed(2)}</span>
       <button aria-label="Remove ${escapeHtml(p.name)}">×</button>`;
     li.querySelector('button').addEventListener('click', () => removePlace(k));
+    li.addEventListener('pointerenter', () => focusSeries($('height-chart'), p.name));
+    li.addEventListener('pointerleave', () => focusSeries($('height-chart'), null));
     ul.append(li);
   });
   heightLayer.clearLayers();
@@ -320,12 +322,21 @@ async function measure() {
       });
       if (run !== measureRun) return;
       // Sharpen each step of the running maximum, the points the curve and table are made of.
-      const steps = [...new Map(core.finishProfile(profile).filter((q) => q.at).map((q) => [`${q.at.lon},${q.at.lat}`, q.at])).values()].slice(-25);
-      for (const [s, c] of steps.entries()) {
-        if (run !== measureRun) return;
-        progress('height', `Sharpening the peaks around ${p.name.split(',')[0]}: ${s + 1} of ${steps.length}`, s / steps.length);
-        const top = await refinePeak(c, z);
-        core.addSample(profile, top.lon, top.lat, top.metres);
+      // A step that was a glitch drops out, which can expose new steps, so go round until
+      // every step has been read up close.
+      const seen = new Set();
+      for (let round = 0; round < 6; round++) {
+        const steps = [...new Map(core.finishProfile(profile).filter((q) => q.at).map((q) => [`${q.at.lon},${q.at.lat}`, q.at])).entries()]
+          .filter(([key]) => !seen.has(key)).slice(-25);
+        if (!steps.length) break;
+        for (const [s, [key, c]] of steps.entries()) {
+          if (run !== measureRun) return;
+          progress('height', `Sharpening the peaks around ${p.name.split(',')[0]}: ${s + 1} of ${steps.length}`, s / steps.length);
+          const top = await refinePeak(c, z);
+          core.replacePeak(profile, c, top);
+          seen.add(key);
+          seen.add(`${top.lon},${top.lat}`);
+        }
       }
       p.points = core.finishProfile(profile);
       p.radius = radius;
@@ -351,7 +362,11 @@ function renderHeight() {
   const xf = xFactor(), yf = yFactor();
   const ready = state.places.filter((p) => p.points);
   const log = $('xscale').value === 'log';
-  $('height-legend').innerHTML = ready.map((p) => `<span><i style="background:${placeColor(p)}"></i>${escapeHtml(p.name)}</span>`).join('');
+  $('height-legend').innerHTML = ready.map((p) => `<span data-name="${escapeHtml(p.name)}"><i style="background:${placeColor(p)}"></i>${escapeHtml(p.name)}</span>`).join('');
+  for (const span of $('height-legend').children) {
+    span.addEventListener('pointerenter', () => focusSeries($('height-chart'), span.dataset.name));
+    span.addEventListener('pointerleave', () => focusSeries($('height-chart'), null));
+  }
   lineChart($('height-chart'), {
     series: ready.map((p) => ({
       name: p.name,
@@ -370,7 +385,7 @@ function renderHeight() {
   const head = `<thead><tr><th>To stand this high</th>${ready.map((p) => `<th>${escapeHtml(p.name.split(',')[0])}</th>`).join('')}</tr></thead>`;
   const rows = heights.map((m) => `<tr><td>${core.formatHeight(m, state.units)}</td>${ready.map((p) => {
     const d = core.distanceToReach(p.points, m);
-    return d == null ? `<td class="none">beyond ${core.formatDistance(p.radius, state.units)}</td>` : `<td>${core.formatDistance(d, state.units)}</td>`;
+    return d == null ? `<td class="none" title="Not within ${core.formatDistance(p.radius, state.units)}">&gt; ${core.formatDistance(p.radius, state.units)}</td>` : `<td>${core.formatDistance(d, state.units)}</td>`;
   }).join('')}</tr>`).join('');
   const top = `<tr><td>Highest within ${core.formatDistance(state.radius, state.units)}</td>${ready.map((p) => {
     const s = core.summitWithin(p.points, p.radius);
