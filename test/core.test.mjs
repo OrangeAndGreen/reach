@@ -61,6 +61,22 @@ test('profile keeps the running maximum and where it is', () => {
   assert.equal(core.summitWithin(pts, 50).metres, 300);
 });
 
+test('table rings: one radius per height reached, one summit per distinct point', () => {
+  const p = core.makeProfile(boston, 100, 10);
+  const east = (km) => ({ lon: boston.lon + km / core.kmPerDegree(boston.lat).lon, lat: boston.lat });
+  const add = (km, m) => { const q = east(km); core.addSample(p, q.lon, q.lat, m); };
+  add(5, 20); add(35, 300); add(95, 900);
+  const pts = core.finishProfile(p);
+  // 100 and 250 m are both first reached by the 300 m point at 40 km; 2000 m never is.
+  const { radii, summits } = core.tableRings(pts, [10, 100, 250, 800, 2000], 100);
+  assert.deepEqual(radii, [10, 40, 100]);
+  assert.deepEqual(summits.map((s) => [s.metres, s.minKm, s.maxKm]), [[20, 10, 10], [300, 40, 40], [900, 100, 100]]);
+  // The 900 m point is the highest both at 100 km (reaching 800 m) and over the whole radius.
+  const wide = core.tableRings(pts, [300, 800], 150);
+  assert.deepEqual(wide.radii, [40, 100, 150]);
+  assert.deepEqual(wide.summits.map((s) => [s.metres, s.minKm, s.maxKm]), [[300, 40, 40], [900, 100, 150]]);
+});
+
 test('a profile with nothing in a ring leaves it empty', () => {
   const p = core.makeProfile(boston, 10, 2);
   const pts = core.finishProfile(p);

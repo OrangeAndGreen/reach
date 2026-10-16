@@ -476,6 +476,26 @@ export function summitWithin(points, limitKm) {
   return p && p.at ? { ...p.at, metres: p.max } : null;
 }
 
+/**
+ * The radii of a place's height table (the distance to reach each height,
+ * then the whole radius) and the highest point within each. A summit that is
+ * the highest for several radii comes once, with the smallest and largest of
+ * them as minKm and maxKm.
+ */
+export function tableRings(points, heights, radiusKm) {
+  const found = heights.map((m) => distanceToReach(points, m)).filter((d) => d != null);
+  const radii = [...new Set([...found, radiusKm])].sort((a, b) => a - b);
+  const summits = new Map();
+  for (const r of radii) {
+    const s = summitWithin(points, r);
+    if (!s) continue;
+    const key = `${s.lon},${s.lat}`;
+    if (summits.has(key)) summits.get(key).maxKm = r;
+    else summits.set(key, { ...s, minKm: r, maxKm: r });
+  }
+  return { radii, summits: [...summits.values()] };
+}
+
 // ---------- printable terrain ----------
 
 /** The lon/lat box of a square sideKm across, centred on center. */

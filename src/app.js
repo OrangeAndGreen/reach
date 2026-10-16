@@ -281,18 +281,35 @@ function renderPlaces() {
     ul.append(li);
   });
   heightLayer.clearLayers();
-  for (const p of state.places) {
+  // A shaded circle for each radius in the table, largest first; nested ones darken toward the place.
+  const rings = state.places.map((p) => (p.points ? core.tableRings(p.points, tableHeights(), p.radius) : null));
+  state.places.forEach((p, k) => {
+    for (const r of [...(rings[k]?.radii || [])].reverse()) {
+      L.circle([p.lat, p.lon], { radius: r * 1000, color: placeColor(p), weight: 1, opacity: 0.6, fillColor: placeColor(p), fillOpacity: 0.06, interactive: false })
+        .addTo(heightLayer);
+    }
+  });
+  state.places.forEach((p, k) => {
     L.circleMarker([p.lat, p.lon], { radius: 7, color: '#fff', weight: 2, fillColor: placeColor(p), fillOpacity: 1 })
       .bindTooltip(p.name).addTo(heightLayer);
-    if (p.points) {
-      const top = core.summitWithin(p.points, state.radius);
-      if (top) {
-        L.circleMarker([top.lat, top.lon], { radius: 5, color: placeColor(p), weight: 2, fillColor: '#fff', fillOpacity: 1 })
-          .bindTooltip(`Highest within ${core.formatDistance(state.radius, state.units)} of ${p.name.split(',')[0]}: ${core.formatHeight(top.metres, state.units)}`)
-          .addTo(heightLayer);
-      }
+    for (const top of rings[k]?.summits || []) {
+      L.circleMarker([top.lat, top.lon], { radius: 5, color: placeColor(p), weight: 2, fillColor: '#fff', fillOpacity: 1 })
+        .bindTooltip(`Highest within ${distanceRange(top.minKm, top.maxKm)} of ${p.name.split(',')[0]}: ${core.formatHeight(top.metres, state.units)}`)
+        .addTo(heightLayer);
     }
-  }
+  });
+}
+
+/** The heights the table asks about, round numbers in the units on show. */
+function tableHeights() {
+  return state.units === 'imperial' ? [500, 1000, 3000, 5000, 10000].map((ft) => ft / 3.28084) : [100, 500, 1000, 2000, 3000];
+}
+
+/** "40 km", or "40–100 km" when a summit is the highest over a span of radii. */
+function distanceRange(minKm, maxKm) {
+  const hi = core.formatDistance(maxKm, state.units);
+  if (minKm === maxKm) return hi;
+  return `${core.formatDistance(minKm, state.units).replace(/ (km|mi)$/, '')}–${hi}`;
 }
 
 function fitPlaces() {
@@ -381,7 +398,7 @@ function renderHeight() {
   });
 
   // Distance needed to reach each height, and the top within the whole radius.
-  const heights = state.units === 'imperial' ? [500, 1000, 3000, 5000, 10000].map((ft) => ft / 3.28084) : [100, 500, 1000, 2000, 3000];
+  const heights = tableHeights();
   const head = `<thead><tr><th>To stand this high</th>${ready.map((p) => `<th>${escapeHtml(p.name.split(',')[0])}</th>`).join('')}</tr></thead>`;
   const rows = heights.map((m) => `<tr><td>${core.formatHeight(m, state.units)}</td>${ready.map((p) => {
     const d = core.distanceToReach(p.points, m);
