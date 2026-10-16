@@ -693,9 +693,16 @@ function printSettings() {
     baseMm: Number($('print-base').value),
     seaFloorM: Number($('print-sea').value),
     depthStretch: Number($('print-depth').value),
+    ...shoreSetting($('print-shore').value),
     buildings: $('print-buildings').value === 'osm' && Number($('print-side').value) <= core.BUILDINGS_MAX_KM,
     buildingDefaultM: Number($('print-default').value),
   };
+}
+
+/** The shoreline select's value, "groove-0.4" or "ridge-0.8" or "0", as settings. */
+function shoreSetting(value) {
+  const [style, size] = value.split('-');
+  return { shoreMm: Number(size) || 0, shoreRidge: style === 'ridge' };
 }
 
 function setPrintCentre(place) {
@@ -826,11 +833,13 @@ async function buildModel() {
       }
     }
     const scaled = core.printHeights(heights, set);
+    const shore = set.shoreMm > 0 ? core.shorePoints(heights, n) : null;
+    if (shore) scaled.mm = core.markShore(scaled.mm, shore, set.shoreMm, set.shoreRidge);
     const extra = placed ? core.buildingTriangles(placed.buildings, scaled.mm, n, { ...set, ...scaled }) : [];
     if (buildings) buildings.triangles = extra.length / 3;
     const stl = core.terrainStl(scaled.mm, n, set.widthMm, extra);
     state.model = {
-      stl, scaled, set, centre, zoom: z, pixel, buildings,
+      stl, scaled, set, centre, zoom: z, pixel, buildings, shore,
       seaZoom, seaPixel: seaZoom == null ? null : core.pixelMetres(centre.lat, seaZoom),
     };
     showModel();
@@ -852,6 +861,7 @@ $('print-side').addEventListener('change', () => { drawPrintSquare(true); showBu
 $('print-exag').addEventListener('input', () => { $('print-exag-value').textContent = `× ${$('print-exag').value}`; });
 $('print-exag').addEventListener('change', buildModel);
 for (const id of ['print-width', 'print-cells', 'print-base', 'print-default']) $(id).addEventListener('change', buildModel);
+$('print-shore').addEventListener('change', () => { $('print-shore-hint').hidden = $('print-shore').value === '0'; buildModel(); });
 $('print-exag-value').textContent = `× ${$('print-exag').value}`;
 function showSeaControls() {
   const on = Number($('print-sea').value) > 0;
@@ -921,13 +931,16 @@ function showModel() {
   geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geom.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
   // The sea floor in blue: top-surface vertices below sea level (the top comes first in the STL).
-  // Buildings, written last, in grey.
+  // The shoreline line dark, and buildings, written last, in grey.
   const colours = new Float32Array(count * 9);
-  const land = new THREE.Color(0xc9b79c), sea = new THREE.Color(0x6f9bc7), built = new THREE.Color(0x9a9da3);
-  const topVertices = 2 * (m.set.cells - 1) ** 2 * 3;
+  const land = new THREE.Color(0xc9b79c), sea = new THREE.Color(0x6f9bc7), built = new THREE.Color(0x9a9da3), groove = new THREE.Color(0x4a3f33);
+  const n = m.set.cells, step = m.set.widthMm / (n - 1);
+  const topVertices = 2 * (n - 1) ** 2 * 3;
   const firstBuilt = (count - (m.buildings?.triangles || 0)) * 3;
+  const onShore = (v) => m.shore[(n - 1 - Math.round(pos[v * 3 + 1] / step)) * n + Math.round(pos[v * 3] / step)];
   for (let v = 0; v < count * 3; v++) {
     const c = v >= firstBuilt ? built
+      : m.shore && v < topVertices && onShore(v) ? groove
       : m.scaled.seaMm != null && v < topVertices && pos[v * 3 + 2] < m.scaled.seaMm - 1e-3 ? sea : land;
     colours[v * 3] = c.r; colours[v * 3 + 1] = c.g; colours[v * 3 + 2] = c.b;
   }
@@ -957,6 +970,7 @@ function renderPrintTable() {
     ['Map scale', `1 : ${scale.toLocaleString('en-US')}`],
     ['Height stretch', `× ${set.exaggeration}, so 1 mm of model is ${core.formatHeight(1 / (scaled.mmPerMetre * set.exaggeration), state.units)}`],
     ...(set.seaFloorM > 0 ? [['Sea floor', seaFloorText(set, scaled)]] : []),
+    ...(set.shoreMm > 0 ? [['Shoreline', shoreText(m)]] : []),
     ...(m.buildings ? [['Buildings', buildingsText(m)]] : []),
     ['STL', `${(m.stl.byteLength / 1048576).toFixed(1)} MB, ${new DataView(m.stl).getUint32(80, true).toLocaleString('en-US')} triangles`],
   ];
@@ -968,6 +982,15 @@ function seaFloorText(set, scaled) {
   const stretch = `× ${set.depthStretch}, so 1 mm of model is ${core.formatHeight(1 / (scaled.mmPerMetre * set.depthStretch), state.units)}`;
   const level = scaled.seaMm != null ? `sea level is ${scaled.seaMm.toFixed(1)} mm up` : 'nothing here is below sea level';
   return `${limit} at ${stretch}; ${level}`;
+}
+
+function shoreText({ set, shore }) {
+  const what = set.shoreRidge ? 'ridge' : 'groove';
+  if (!shore.includes(1)) return `No coast in this square, so no ${what}`;
+  const wide = set.widthMm / (set.cells - 1);
+  return set.shoreRidge
+    ? `A ridge ${set.shoreMm} mm high along the coast, ${wide.toFixed(2)} mm from each side to its top`
+    : `A groove ${set.shoreMm} mm deep along the coast, ${wide.toFixed(2)} mm from each side to its bottom`;
 }
 
 function buildingsText({ buildings: b, set }) {
@@ -1079,6 +1102,12 @@ $('print-file').addEventListener('change', async () => {
   if (set.depthStretch > Number(depth.max)) depth.max = String(set.depthStretch);
   depth.value = String(set.depthStretch);
   showSeaControls();
+  const shoreValue = set.shoreMm ? `${set.shoreRidge ? 'ridge' : 'groove'}-${set.shoreMm}` : '0';
+  if (![...$('print-shore').options].some((o) => o.value === shoreValue)) {
+    $('print-shore').append(new Option(set.shoreRidge ? `Ridge ${set.shoreMm} mm high` : `Groove ${set.shoreMm} mm deep`, shoreValue));
+  }
+  $('print-shore').value = shoreValue;
+  $('print-shore-hint').hidden = set.shoreMm === 0;
   $('print-buildings').value = set.buildings ? 'osm' : 'none';
   choose('print-default', set.buildingDefaultM, core.formatHeight(set.buildingDefaultM, state.units));
   showBuildingControls();

@@ -333,6 +333,43 @@ test('the sea floor fills in under sea level, and land keeps its detail', () => 
   assert.deepEqual(core.withSeaFloor(fine, coarse), [120, -30, 0, -4, -657]);
 });
 
+test('the shoreline is the land beside the sea, and small dips below sea level are not sea', () => {
+  const n = 6;
+  // west half land, east half sea, and one lone point below sea level inland
+  const h = [];
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) h.push(i < 3 ? 50 : (i === 3 ? 0 : -20));
+  h[1 * n + 0] = -3;
+  const shore = core.shorePoints(h, n);
+  for (let j = 0; j < n; j++) {
+    assert.deepEqual([...shore.slice(j * n, j * n + n)], [0, 0, 1, 0, 0, 0], `row ${j}`);
+  }
+  // with no size limit the lone dip draws a ring around it
+  const all = core.shorePoints(h, n, 1);
+  assert.equal(all[0 * n + 0], 1);
+  assert.equal(all[1 * n + 1], 1);
+  assert.equal(core.shorePoints(new Array(n * n).fill(10), n).includes(1), false);
+});
+
+test('the shoreline groove cuts down, and never through the model', () => {
+  const shore = Uint8Array.from([0, 1, 1, 1]);
+  assert.deepEqual(core.markShore([5, 5, 1, 0.4], shore, 0.8).map((v) => +v.toFixed(9)), [5, 4.2, 0.6, 0.4]);
+});
+
+test('the shoreline ridge stands up from the shore alone', () => {
+  const shore = Uint8Array.from([0, 1, 1]);
+  assert.deepEqual(core.markShore([5, 5, 0.4], shore, 0.8, true).map((v) => +v.toFixed(9)), [5, 5.8, 1.2]);
+});
+
+test('a print KML carries the shoreline line and its style, and older files have none', () => {
+  const set = { sideKm: 5, widthMm: 80, cells: 120, exaggeration: 2, baseMm: 2, shoreMm: 0.4, shoreRidge: true };
+  const kml = core.printKml({ centre: { name: 'a', lat: 1, lon: 2 }, set });
+  assert.equal(core.parsePrintKml(kml).set.shoreMm, 0.4);
+  assert.equal(core.parsePrintKml(kml).set.shoreRidge, true);
+  const old = kml.replace(/\s*<Data name="shore(Mm|Ridge)">.*?<\/Data>/g, '');
+  assert.equal(core.parsePrintKml(old).set.shoreMm, 0);
+  assert.equal(core.parsePrintKml(old).set.shoreRidge, false);
+});
+
 test('despike fills a lone pit where the sources meet, and keeps a real basin', () => {
   const size = 5;
   const beach = new Float32Array(size * size).fill(4);
@@ -379,7 +416,7 @@ test('terrain STL faces outward: top normals point up, bottom down', () => {
 
 test('a print KML carries the square, the settings and the model figures', () => {
   const centre = { name: 'Mount Washington, New Hampshire', lat: 44.2706, lon: -71.3033 };
-  const set = { sideKm: 20, widthMm: 120, cells: 200, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, buildings: false, buildingDefaultM: 7 };
+  const set = { sideKm: 20, widthMm: 120, cells: 200, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, buildings: false, buildingDefaultM: 7 };
   const model = { zoom: 12, pixelM: 27.8, lowM: 410, highM: 1916, reliefMm: 13.55, triangles: 81590 };
   const kml = core.printKml({ centre, set, model, stlFile: 'reach-mount-washington-20km.stl', made: new Date('2026-10-15T12:00:00Z') });
   assert.match(kml, /<Data name="heightStretch"><displayName>Height stretch \(x\)<\/displayName><value>1.5<\/value><\/Data>/);
@@ -401,7 +438,7 @@ test('a print KML carries the square, the settings and the model figures', () =>
 
 test('a print KML round-trips awkward names, and works without a model', () => {
   const centre = { name: 'Rock & "Roll" <Hills>', lat: -33.9, lon: 18.4 };
-  const set = { sideKm: 5, widthMm: 80, cells: 120, exaggeration: 10, baseMm: 2, seaFloorM: 1000, depthStretch: 4, buildings: false, buildingDefaultM: 7 };
+  const set = { sideKm: 5, widthMm: 80, cells: 120, exaggeration: 10, baseMm: 2, seaFloorM: 1000, depthStretch: 4, shoreMm: 0.8, shoreRidge: false, buildings: false, buildingDefaultM: 7 };
   const kml = core.printKml({ centre, set });
   assert.match(kml, /Rock &amp; &quot;Roll&quot; &lt;Hills&gt;/);
   assert.doesNotMatch(kml, /metresPerPixel/);
@@ -613,7 +650,7 @@ test('each building is a closed solid standing on the terrain, courtyards and al
 
 test('a print KML keeps the building settings and what came of them', () => {
   const centre = { name: 'Sunny Isles Beach', lat: 25.94, lon: -80.12 };
-  const set = { sideKm: 1, widthMm: 120, cells: 200, exaggeration: 1, baseMm: 3, seaFloorM: 0, depthStretch: 1, buildings: true, buildingDefaultM: 10 };
+  const set = { sideKm: 1, widthMm: 120, cells: 200, exaggeration: 1, baseMm: 3, seaFloorM: 0, depthStretch: 1, shoreMm: 0, shoreRidge: false, buildings: true, buildingDefaultM: 10 };
   const model = { zoom: 14, pixelM: 8.6, lowM: 0, highM: 4, reliefMm: 0.5, triangles: 5000,
     buildings: { count: 111, tagged: 59, inData: 1, tallestM: 203.4, readAt: '2026-10-16' } };
   const kml = core.printKml({ centre, set, model });
