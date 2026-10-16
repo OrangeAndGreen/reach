@@ -607,6 +607,7 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ['baseMm', 'Base under the lowest point (mm)', set.baseMm],
     ['seaFloorM', 'Sea floor down to (m, 0 cuts it at sea level)', set.seaFloorM ?? 0],
     ['depthStretch', 'Depth stretch (x)', set.depthStretch ?? set.exaggeration],
+    ['shoreMm', 'Shoreline groove depth (mm, 0 for none)', set.shoreMm ?? 0],
     ['buildings', 'Buildings from OpenStreetMap (1 yes, 0 no)', set.buildings ? 1 : 0],
     ['buildingDefaultM', 'Building height where OSM has none (m)', set.buildingDefaultM ?? DEFAULT_BUILDING_M],
   ];
@@ -710,11 +711,66 @@ export function parsePrintKml(text) {
       // files from before the sea floor cut it at sea level
       seaFloorM: values.seaFloorM == null ? 0 : num('seaFloorM', 0, 11100),
       depthStretch: values.depthStretch == null ? exaggeration : num('depthStretch', 0.1, 100),
+      // files from before the shoreline have none
+      shoreMm: values.shoreMm == null ? 0 : num('shoreMm', 0, 10),
       // files from before buildings have none
       buildings: values.buildings === '1',
       buildingDefaultM: values.buildingDefaultM == null ? DEFAULT_BUILDING_M : num('buildingDefaultM', 1, 100),
     },
   };
+}
+
+/**
+ * Sea smaller than this many grid points draws no shoreline: below it, a
+ * reading at or under sea level is a quarry, a dip in the data or a polder
+ * field, not the sea.
+ */
+export const SHORE_MIN_SEA = 8;
+
+/**
+ * The shoreline on an n x n height grid (row 0 north): a 1 for each land
+ * point (above 0 m) beside a sea point (at or below 0 m) to its north,
+ * south, east or west, as a Uint8Array. Patches of sea smaller than
+ * minSea points don't count.
+ */
+export function shorePoints(heights, n, minSea = SHORE_MIN_SEA) {
+  // Label the sea in 4-connected patches, keeping the ones big enough.
+  const sea = new Uint8Array(n * n);
+  const seen = new Uint8Array(n * n);
+  const stack = [];
+  for (let start = 0; start < n * n; start++) {
+    if (seen[start] || heights[start] > 0) continue;
+    const patch = [];
+    seen[start] = 1;
+    stack.push(start);
+    while (stack.length) {
+      const k = stack.pop();
+      patch.push(k);
+      const i = k % n, j = (k - i) / n;
+      for (const q of [i > 0 ? k - 1 : -1, i < n - 1 ? k + 1 : -1, j > 0 ? k - n : -1, j < n - 1 ? k + n : -1]) {
+        if (q >= 0 && !seen[q] && !(heights[q] > 0)) { seen[q] = 1; stack.push(q); }
+      }
+    }
+    if (patch.length >= minSea) for (const k of patch) sea[k] = 1;
+  }
+  const shore = new Uint8Array(n * n);
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      const k = j * n + i;
+      if (!(heights[k] > 0)) continue;
+      if ((i > 0 && sea[k - 1]) || (i < n - 1 && sea[k + 1]) || (j > 0 && sea[k - n]) || (j < n - 1 && sea[k + n])) shore[k] = 1;
+    }
+  }
+  return shore;
+}
+
+/**
+ * Cuts a V-groove depthMm deep along the shore (from shorePoints) into a
+ * millimetre grid, never leaving less than minMm of model under it. The
+ * groove is still a height grid, so the STL stays closed.
+ */
+export function chiselShore(mm, shore, depthMm, minMm = 0.6) {
+  return mm.map((z, k) => (shore[k] ? Math.max(Math.min(z, minMm), z - depthMm) : z));
 }
 
 /**
