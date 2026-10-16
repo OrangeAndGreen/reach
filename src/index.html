@@ -221,8 +221,10 @@
           <label for="print-shore">Shoreline</label>
           <select id="print-shore">
             <option value="0" selected>No line</option>
-            <option value="0.4">Groove 0.4 mm deep</option>
-            <option value="0.8">Groove 0.8 mm deep</option>
+            <option value="groove-0.4">Groove 0.4 mm deep</option>
+            <option value="groove-0.8">Groove 0.8 mm deep</option>
+            <option value="ridge-0.4">Ridge 0.4 mm high</option>
+            <option value="ridge-0.8">Ridge 0.8 mm high</option>
           </select>
         </div>
       </div>
@@ -245,7 +247,7 @@
         <button id="print-run" class="primary">Build model</button>
       </div>
       <p id="print-sea-hint" class="hint" hidden>The sea floor comes from coarser tiles than the land (75 to 150 m per pixel, by latitude), so it prints softer. Lakes print as their flat surface.</p>
-      <p id="print-shore-hint" class="hint" hidden>The groove runs along the land's edge, one grid point wide, so a finer detail draws a finer line. It follows the coast, not lakeshores, which the tiles hold as flat land.</p>
+      <p id="print-shore-hint" class="hint" hidden>The line runs along the land's edge, one grid point wide, so a finer detail draws a finer line. It follows the coast, not lakeshores, which the tiles hold as flat land.</p>
       <p id="print-buildings-hint" class="hint" hidden></p>
       <div id="print-status" class="status" aria-live="polite"></div>
 

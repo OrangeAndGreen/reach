@@ -15,8 +15,8 @@ Three tools on one map:
   STL for the slicer. On squares of 2 km or less it can raise the buildings
   from OpenStreetMap too. Choose the model width, the detail, a height stretch and
   the base thickness, and whether the sea floor comes too (down to 50 m, 200 m,
-  1,000 m or all the way, with its own depth stretch), and whether to cut a
-  groove along the shoreline (0.4 or 0.8 mm deep) to paint or just to see the coast by. A preview you can turn shows the model, beside its real
+  1,000 m or all the way, with its own depth stretch), and whether to mark the
+  shoreline with a groove or a ridge (0.4 or 0.8 mm) to paint or just to see the coast by. A preview you can turn shows the model, beside its real
   dimensions and scale. The default is the 20 km around Mt Washington:
   120 × 120 × 17.6 mm at ×1.5. **Download KML** saves the square for Google
   Earth along with every setting (centre, size, width, detail, stretch, base, sea floor, shoreline)
@@ -98,13 +98,13 @@ ES modules, which is why it needs the little server rather than file://.
   (Oslofjord is about -5 m). The mesh is the terrain, four walls and
   a bottom fanned from its centre. A test checks that every edge is shared by
   exactly two triangles and wound consistently, so it is watertight.
-- **Shoreline.** The groove is every land point (above 0 m) with a sea point
+- **Shoreline.** The line is every land point (above 0 m) with a sea point
   (at or below 0 m) to its north, south, east or west, lowered by the groove
-  depth, so it is a V one grid step wide on each side and the mesh stays a
-  closed height grid. Patches of fewer than 8 points at or below sea level
+  depth or raised by the ridge height, so it is a V (or an upside-down V) one
+  grid step wide on each side and the mesh stays a closed height grid. Patches of fewer than 8 points at or below sea level
   don't count as sea, so a quarry or a dip in the data draws no ring. Lakes
-  read as flat land above 0 m, so lakeshores get no groove. In the preview the
-  groove is drawn dark.
+  read as flat land above 0 m, so lakeshores get no line. In the preview the
+  line is drawn dark.
 - **Buildings.** Each footprint becomes its own closed solid, from just under
   the terrain beneath it up to its ground plus its height, at the land's height
   stretch. The height is OSM's `height`, or its floors (`building:levels` plus

@@ -607,7 +607,8 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ['baseMm', 'Base under the lowest point (mm)', set.baseMm],
     ['seaFloorM', 'Sea floor down to (m, 0 cuts it at sea level)', set.seaFloorM ?? 0],
     ['depthStretch', 'Depth stretch (x)', set.depthStretch ?? set.exaggeration],
-    ['shoreMm', 'Shoreline groove depth (mm, 0 for none)', set.shoreMm ?? 0],
+    ['shoreMm', 'Shoreline line size (mm, 0 for none)', set.shoreMm ?? 0],
+    ['shoreRidge', 'Shoreline as a ridge (1) or a groove (0)', set.shoreRidge ? 1 : 0],
     ['buildings', 'Buildings from OpenStreetMap (1 yes, 0 no)', set.buildings ? 1 : 0],
     ['buildingDefaultM', 'Building height where OSM has none (m)', set.buildingDefaultM ?? DEFAULT_BUILDING_M],
   ];
@@ -713,6 +714,7 @@ export function parsePrintKml(text) {
       depthStretch: values.depthStretch == null ? exaggeration : num('depthStretch', 0.1, 100),
       // files from before the shoreline have none
       shoreMm: values.shoreMm == null ? 0 : num('shoreMm', 0, 10),
+      shoreRidge: values.shoreRidge === '1',
       // files from before buildings have none
       buildings: values.buildings === '1',
       buildingDefaultM: values.buildingDefaultM == null ? DEFAULT_BUILDING_M : num('buildingDefaultM', 1, 100),
@@ -765,12 +767,12 @@ export function shorePoints(heights, n, minSea = SHORE_MIN_SEA) {
 }
 
 /**
- * Cuts a V-groove depthMm deep along the shore (from shorePoints) into a
- * millimetre grid, never leaving less than minMm of model under it. The
- * groove is still a height grid, so the STL stays closed.
+ * Marks the shore (from shorePoints) on a millimetre grid: a V-groove sizeMm
+ * deep, never leaving less than minMm of model under it, or with ridge set,
+ * a ridge sizeMm high. Either is still a height grid, so the STL stays closed.
  */
-export function chiselShore(mm, shore, depthMm, minMm = 0.6) {
-  return mm.map((z, k) => (shore[k] ? Math.max(Math.min(z, minMm), z - depthMm) : z));
+export function markShore(mm, shore, sizeMm, ridge = false, minMm = 0.6) {
+  return mm.map((z, k) => (!shore[k] ? z : ridge ? z + sizeMm : Math.max(Math.min(z, minMm), z - sizeMm)));
 }
 
 /**
