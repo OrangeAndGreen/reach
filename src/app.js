@@ -700,6 +700,9 @@ function drawPrintSquare(fit) {
   L.rectangle(corners, { color: '#ffffff', weight: 7, opacity: 0.9, fill: false, interactive: false }).addTo(printLayer);
   const rect = L.rectangle(corners, { color: cssVar('--accent'), weight: 3, fill: true, fillOpacity: 0.06, interactive: false });
   rect.addTo(printLayer);
+  // The centre, so a small nudge is a click just beside it. Not interactive: a click on it still re-centres.
+  L.circleMarker([state.print.lat, state.print.lon], { radius: 5, color: '#fff', weight: 2, fillColor: cssVar('--accent'), fillOpacity: 1, interactive: false })
+    .addTo(printLayer);
   if (fit) map.fitBounds(rect.getBounds().pad(0.6));
 }
 
