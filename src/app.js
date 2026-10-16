@@ -694,6 +694,7 @@ function printSettings() {
     seaFloorM: Number($('print-sea').value),
     depthStretch: Number($('print-depth').value),
     ...shoreSetting($('print-shore').value),
+    label: $('print-label').value === 'on',
     buildings: $('print-buildings').value === 'osm' && Number($('print-side').value) <= core.BUILDINGS_MAX_KM,
     buildingDefaultM: Number($('print-default').value),
   };
@@ -837,9 +838,10 @@ async function buildModel() {
     if (shore) scaled.mm = core.markShore(scaled.mm, shore, set.shoreMm, set.shoreRidge);
     const extra = placed ? core.buildingTriangles(placed.buildings, scaled.mm, n, { ...set, ...scaled }) : [];
     if (buildings) buildings.triangles = extra.length / 3;
-    const stl = core.terrainStl(scaled.mm, n, set.widthMm, extra);
+    const label = set.label ? core.bottomLabel(core.labelLines(centre, set), scaled.mm, n, set.widthMm) : null;
+    const stl = core.terrainStl(scaled.mm, n, set.widthMm, extra, label?.why ? null : label);
     state.model = {
-      stl, scaled, set, centre, zoom: z, pixel, buildings, shore,
+      stl, scaled, set, centre, zoom: z, pixel, buildings, shore, label,
       seaZoom, seaPixel: seaZoom == null ? null : core.pixelMetres(centre.lat, seaZoom),
     };
     showModel();
@@ -862,6 +864,7 @@ $('print-exag').addEventListener('input', () => { $('print-exag-value').textCont
 $('print-exag').addEventListener('change', buildModel);
 for (const id of ['print-width', 'print-cells', 'print-base', 'print-default']) $(id).addEventListener('change', buildModel);
 $('print-shore').addEventListener('change', () => { $('print-shore-hint').hidden = $('print-shore').value === '0'; buildModel(); });
+$('print-label').addEventListener('change', () => { $('print-label-hint').hidden = $('print-label').value !== 'on'; buildModel(); });
 $('print-exag-value').textContent = `× ${$('print-exag').value}`;
 function showSeaControls() {
   const on = Number($('print-sea').value) > 0;
@@ -938,9 +941,12 @@ function showModel() {
   const topVertices = 2 * (n - 1) ** 2 * 3;
   const firstBuilt = (count - (m.buildings?.triangles || 0)) * 3;
   const onShore = (v) => m.shore[(n - 1 - Math.round(pos[v * 3 + 1] / step)) * n + Math.round(pos[v * 3] / step)];
+  // a label pocket: a triangle with no point above the pocket's depth, and one off the bed
+  const depth = m.label?.depthMm;
+  const inPocket = (t) => depth && [0, 1, 2].every((k) => pos[(t * 3 + k) * 3 + 2] <= depth + 1e-4) && [0, 1, 2].some((k) => pos[(t * 3 + k) * 3 + 2] > 1e-4);
   for (let v = 0; v < count * 3; v++) {
     const c = v >= firstBuilt ? built
-      : m.shore && v < topVertices && onShore(v) ? groove
+      : (m.shore && v < topVertices && onShore(v)) || (v >= topVertices && inPocket(Math.floor(v / 3))) ? groove
       : m.scaled.seaMm != null && v < topVertices && pos[v * 3 + 2] < m.scaled.seaMm - 1e-3 ? sea : land;
     colours[v * 3] = c.r; colours[v * 3 + 1] = c.g; colours[v * 3 + 2] = c.b;
   }
@@ -971,6 +977,7 @@ function renderPrintTable() {
     ['Height stretch', `× ${set.exaggeration}, so 1 mm of model is ${core.formatHeight(1 / (scaled.mmPerMetre * set.exaggeration), state.units)}`],
     ...(set.seaFloorM > 0 ? [['Sea floor', seaFloorText(set, scaled)]] : []),
     ...(set.shoreMm > 0 ? [['Shoreline', shoreText(m)]] : []),
+    ...(m.label ? [['Label underneath', labelText(m.label)]] : []),
     ...(m.buildings ? [['Buildings', buildingsText(m)]] : []),
     ['STL', `${(m.stl.byteLength / 1048576).toFixed(1)} MB, ${new DataView(m.stl).getUint32(80, true).toLocaleString('en-US')} triangles`],
   ];
@@ -991,6 +998,11 @@ function shoreText({ set, shore }) {
   return set.shoreRidge
     ? `A ridge ${set.shoreMm} mm high along the coast, ${wide.toFixed(2)} mm from each side to its top`
     : `A groove ${set.shoreMm} mm deep along the coast, ${wide.toFixed(2)} mm from each side to its bottom`;
+}
+
+function labelText(label) {
+  if (label.why) return `None: ${label.why}`;
+  return `${label.lines.map(escapeHtml).join(' / ')}, letters ${(label.pxMm * 7).toFixed(1)} mm tall, ${label.depthMm.toFixed(1)} mm deep`;
 }
 
 function buildingsText({ buildings: b, set }) {
@@ -1021,7 +1033,7 @@ $('print-kml').addEventListener('click', () => {
   const kml = core.printKml({
     centre: m.centre,
     set: m.set,
-    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.scaled.lowM, highM: m.scaled.highM, reliefMm: m.scaled.reliefMm, triangles: new DataView(m.stl).getUint32(80, true), buildings: m.buildings },
+    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.scaled.lowM, highM: m.scaled.highM, reliefMm: m.scaled.reliefMm, triangles: new DataView(m.stl).getUint32(80, true), buildings: m.buildings, label: m.label },
     stlFile: printFileName(m, 'stl'),
   });
   download(printFileName(m, 'kml'), kml, 'application/vnd.google-earth.kml+xml');
@@ -1108,6 +1120,8 @@ $('print-file').addEventListener('change', async () => {
   }
   $('print-shore').value = shoreValue;
   $('print-shore-hint').hidden = set.shoreMm === 0;
+  $('print-label').value = set.label ? 'on' : 'none';
+  $('print-label-hint').hidden = !set.label;
   $('print-buildings').value = set.buildings ? 'osm' : 'none';
   choose('print-default', set.buildingDefaultM, core.formatHeight(set.buildingDefaultM, state.units));
   showBuildingControls();
