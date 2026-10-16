@@ -7,6 +7,7 @@ const TERRARIUM = (z, x, y) => `https://s3.amazonaws.com/elevation-tiles-prod/te
 const OSRM = 'https://router.project-osrm.org/table/v1/driving/';
 const GEOCODE = 'https://geocoding-api.open-meteo.com/v1/search';
 const REVERSE = 'https://nominatim.openstreetmap.org/reverse';
+const OVERPASS = 'https://overpass-api.de/api/interpreter';
 const MAX_PLACES = 8;
 const BATCH = 299; // destinations per OSRM call, plus the start
 const SERIES = ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8'];
@@ -133,6 +134,9 @@ function setUnits(units) {
   for (const o of $('print-sea').options) {
     const m = Number(o.value);
     if (m > 0 && m < 11000) o.textContent = `Down to ${core.formatHeight(m, units)}`;
+  }
+  for (const o of $('print-default').options) {
+    o.textContent = `${o.textContent.split(' (')[0]} (${core.formatHeight(Number(o.value), units)})`;
   }
   renderHeight();
   renderDrive();
@@ -689,6 +693,8 @@ function printSettings() {
     baseMm: Number($('print-base').value),
     seaFloorM: Number($('print-sea').value),
     depthStretch: Number($('print-depth').value),
+    buildings: $('print-buildings').value === 'osm' && Number($('print-side').value) <= core.BUILDINGS_MAX_KM,
+    buildingDefaultM: Number($('print-default').value),
   };
 }
 
@@ -759,6 +765,23 @@ async function readPrintGrid(centre, set, z, run, what) {
   return heights;
 }
 
+const osmCache = new Map();
+/** Every building in a lon/lat box from OpenStreetMap, through Overpass. Kept for the session. */
+function osmBuildings(bounds) {
+  const query = core.overpassBuildingsQuery(bounds);
+  if (!osmCache.has(query)) {
+    const p = (async () => {
+      const res = await fetch(OVERPASS, { method: 'POST', body: new URLSearchParams({ data: query }) });
+      if ([429, 502, 504].includes(res.status)) throw new Error(`Overpass is busy (${res.status}), try again in a minute`);
+      if (!res.ok) throw new Error(`Overpass ${res.status}`);
+      return { osm: await res.json(), readAt: new Date().toISOString().slice(0, 10) };
+    })();
+    p.catch(() => osmCache.delete(query));
+    osmCache.set(query, p);
+  }
+  return osmCache.get(query);
+}
+
 let modelRun = 0;
 async function buildModel() {
   const run = ++modelRun;
@@ -777,15 +800,45 @@ async function buildModel() {
       heights = core.withSeaFloor(heights, floor);
     }
     const n = set.cells;
+    const pixel = core.pixelMetres(centre.lat, z);
+    let placed = null, buildings = null, missed = '';
+    if (set.buildings) {
+      status('print', 'Fetching the buildings from OpenStreetMap…');
+      const bounds = core.squareBounds(centre, set.sideKm);
+      let reply = null;
+      try {
+        reply = await osmBuildings(bounds);
+      } catch (err) {
+        missed = ` Couldn't fetch the buildings (${err.message}), so this is the terrain alone.`;
+      }
+      if (run !== modelRun) return;
+      if (reply) {
+        const { osm, readAt } = reply;
+        const footprints = core.buildingFootprints(osm, bounds, set.widthMm);
+        // Around a building the terrain may hold, its surroundings are read a pixel and a half out, clear of the blur.
+        placed = core.placeBuildings(footprints, heights, n, { ...set, padM: 1.5 * pixel, defaultM: set.buildingDefaultM });
+        heights = placed.heights;
+        const list = placed.buildings;
+        buildings = {
+          count: list.length, tagged: list.filter((b) => b.tagged).length, inData: list.filter((b) => b.inData).length,
+          tallestM: list.reduce((m, b) => Math.max(m, b.heightM), 0), liftM: placed.liftM, readAt, triangles: 0,
+        };
+      }
+    }
     const scaled = core.printHeights(heights, set);
-    const stl = core.terrainStl(scaled.mm, n, set.widthMm);
+    const extra = placed ? core.buildingTriangles(placed.buildings, scaled.mm, n, { ...set, ...scaled }) : [];
+    if (buildings) buildings.triangles = extra.length / 3;
+    const stl = core.terrainStl(scaled.mm, n, set.widthMm, extra);
     state.model = {
-      stl, scaled, set, centre, zoom: z, pixel: core.pixelMetres(centre.lat, z),
+      stl, scaled, set, centre, zoom: z, pixel, buildings,
       seaZoom, seaPixel: seaZoom == null ? null : core.pixelMetres(centre.lat, seaZoom),
     };
     showModel();
     const sea = seaZoom != null && seaZoom < z ? `, the sea floor at ${Math.round(state.model.seaPixel)} m,` : '';
-    status('print', `Terrain read at ${Math.round(state.model.pixel)} m per pixel${sea} and sampled on a ${n} × ${n} grid.`);
+    const lifted = buildings?.liftM > core.LIFTED_M
+      ? ` The elevation data here holds the buildings: the ground under them reads about ${core.formatHeight(buildings.liftM, state.units)} above the open ground nearby, so the land prints lumpy under them.`
+      : '';
+    status('print', `Terrain read at ${Math.round(pixel)} m per pixel${sea} and sampled on a ${n} × ${n} grid.${lifted}${missed}`, Boolean(missed));
     $('print-stl').disabled = false;
     $('print-kml').disabled = false;
   } catch (err) {
@@ -795,10 +848,10 @@ async function buildModel() {
   }
 }
 $('print-run').addEventListener('click', buildModel);
-$('print-side').addEventListener('change', () => { drawPrintSquare(true); buildModel(); });
+$('print-side').addEventListener('change', () => { drawPrintSquare(true); showBuildingControls(); buildModel(); });
 $('print-exag').addEventListener('input', () => { $('print-exag-value').textContent = `× ${$('print-exag').value}`; });
 $('print-exag').addEventListener('change', buildModel);
-for (const id of ['print-width', 'print-cells', 'print-base']) $(id).addEventListener('change', buildModel);
+for (const id of ['print-width', 'print-cells', 'print-base', 'print-default']) $(id).addEventListener('change', buildModel);
 $('print-exag-value').textContent = `× ${$('print-exag').value}`;
 function showSeaControls() {
   const on = Number($('print-sea').value) > 0;
@@ -810,6 +863,17 @@ $('print-sea').addEventListener('change', () => { showSeaControls(); buildModel(
 $('print-depth').addEventListener('input', showSeaControls);
 $('print-depth').addEventListener('change', buildModel);
 showSeaControls();
+function showBuildingControls() {
+  const wanted = $('print-buildings').value === 'osm';
+  const fits = Number($('print-side').value) <= core.BUILDINGS_MAX_KM;
+  $('print-default-field').hidden = !wanted || !fits;
+  $('print-buildings-hint').hidden = !wanted;
+  $('print-buildings-hint').textContent = fits
+    ? 'Each building is its own solid, raised from the ground under it by its height in OpenStreetMap, or its floors at 3 m each, at the same height stretch as the land. Where the elevation data already holds a building, the ground under it is flattened first.'
+    : `Buildings need a square of ${core.BUILDINGS_MAX_KM} km or less, so this one is the terrain alone.`;
+}
+$('print-buildings').addEventListener('change', () => { showBuildingControls(); buildModel(); });
+showBuildingControls();
 
 let viewer = null;
 function showModel() {
@@ -857,11 +921,14 @@ function showModel() {
   geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geom.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
   // The sea floor in blue: top-surface vertices below sea level (the top comes first in the STL).
+  // Buildings, written last, in grey.
   const colours = new Float32Array(count * 9);
-  const land = new THREE.Color(0xc9b79c), sea = new THREE.Color(0x6f9bc7);
+  const land = new THREE.Color(0xc9b79c), sea = new THREE.Color(0x6f9bc7), built = new THREE.Color(0x9a9da3);
   const topVertices = 2 * (m.set.cells - 1) ** 2 * 3;
+  const firstBuilt = (count - (m.buildings?.triangles || 0)) * 3;
   for (let v = 0; v < count * 3; v++) {
-    const c = m.scaled.seaMm != null && v < topVertices && pos[v * 3 + 2] < m.scaled.seaMm - 1e-3 ? sea : land;
+    const c = v >= firstBuilt ? built
+      : m.scaled.seaMm != null && v < topVertices && pos[v * 3 + 2] < m.scaled.seaMm - 1e-3 ? sea : land;
     colours[v * 3] = c.r; colours[v * 3 + 1] = c.g; colours[v * 3 + 2] = c.b;
   }
   geom.setAttribute('color', new THREE.BufferAttribute(colours, 3));
@@ -890,6 +957,7 @@ function renderPrintTable() {
     ['Map scale', `1 : ${scale.toLocaleString('en-US')}`],
     ['Height stretch', `× ${set.exaggeration}, so 1 mm of model is ${core.formatHeight(1 / (scaled.mmPerMetre * set.exaggeration), state.units)}`],
     ...(set.seaFloorM > 0 ? [['Sea floor', seaFloorText(set, scaled)]] : []),
+    ...(m.buildings ? [['Buildings', buildingsText(m)]] : []),
     ['STL', `${(m.stl.byteLength / 1048576).toFixed(1)} MB, ${new DataView(m.stl).getUint32(80, true).toLocaleString('en-US')} triangles`],
   ];
   $('print-table').innerHTML = `<tbody>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</tbody>`;
@@ -900,6 +968,17 @@ function seaFloorText(set, scaled) {
   const stretch = `× ${set.depthStretch}, so 1 mm of model is ${core.formatHeight(1 / (scaled.mmPerMetre * set.depthStretch), state.units)}`;
   const level = scaled.seaMm != null ? `sea level is ${scaled.seaMm.toFixed(1)} mm up` : 'nothing here is below sea level';
   return `${limit} at ${stretch}; ${level}`;
+}
+
+function buildingsText({ buildings: b, set }) {
+  if (!b.count) return 'None in OpenStreetMap here';
+  const fmt = (v) => v.toLocaleString('en-US');
+  const rest = b.count - b.tagged;
+  const parts = [`${fmt(b.count)} from OpenStreetMap, the tallest ${core.formatHeight(b.tallestM, state.units)}`,
+    rest ? `${fmt(rest)} with no height there, so ${core.formatHeight(set.buildingDefaultM, state.units)}` : 'every one with its own height'];
+  if (b.inData) parts.push(`${fmt(b.inData)} already in the elevation data, flattened under`);
+  if (b.liftM > core.LIFTED_M) parts.push(`the elevation data holds the city, about ${core.formatHeight(b.liftM, state.units)} up under the buildings`);
+  return parts.join('; ');
 }
 
 function printFileName(m, ext) {
@@ -919,7 +998,7 @@ $('print-kml').addEventListener('click', () => {
   const kml = core.printKml({
     centre: m.centre,
     set: m.set,
-    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.scaled.lowM, highM: m.scaled.highM, reliefMm: m.scaled.reliefMm, triangles: new DataView(m.stl).getUint32(80, true) },
+    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.scaled.lowM, highM: m.scaled.highM, reliefMm: m.scaled.reliefMm, triangles: new DataView(m.stl).getUint32(80, true), buildings: m.buildings },
     stlFile: printFileName(m, 'stl'),
   });
   download(printFileName(m, 'kml'), kml, 'application/vnd.google-earth.kml+xml');
@@ -1000,6 +1079,9 @@ $('print-file').addEventListener('change', async () => {
   if (set.depthStretch > Number(depth.max)) depth.max = String(set.depthStretch);
   depth.value = String(set.depthStretch);
   showSeaControls();
+  $('print-buildings').value = set.buildings ? 'osm' : 'none';
+  choose('print-default', set.buildingDefaultM, core.formatHeight(set.buildingDefaultM, state.units));
+  showBuildingControls();
   setPrintCentre(centre);
   status('print', `Opened ${file.name}. Building the same model.`);
 });

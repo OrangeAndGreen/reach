@@ -379,7 +379,7 @@ test('terrain STL faces outward: top normals point up, bottom down', () => {
 
 test('a print KML carries the square, the settings and the model figures', () => {
   const centre = { name: 'Mount Washington, New Hampshire', lat: 44.2706, lon: -71.3033 };
-  const set = { sideKm: 20, widthMm: 120, cells: 200, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5 };
+  const set = { sideKm: 20, widthMm: 120, cells: 200, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, buildings: false, buildingDefaultM: 7 };
   const model = { zoom: 12, pixelM: 27.8, lowM: 410, highM: 1916, reliefMm: 13.55, triangles: 81590 };
   const kml = core.printKml({ centre, set, model, stlFile: 'reach-mount-washington-20km.stl', made: new Date('2026-10-15T12:00:00Z') });
   assert.match(kml, /<Data name="heightStretch"><displayName>Height stretch \(x\)<\/displayName><value>1.5<\/value><\/Data>/);
@@ -401,7 +401,7 @@ test('a print KML carries the square, the settings and the model figures', () =>
 
 test('a print KML round-trips awkward names, and works without a model', () => {
   const centre = { name: 'Rock & "Roll" <Hills>', lat: -33.9, lon: 18.4 };
-  const set = { sideKm: 5, widthMm: 80, cells: 120, exaggeration: 10, baseMm: 2, seaFloorM: 1000, depthStretch: 4 };
+  const set = { sideKm: 5, widthMm: 80, cells: 120, exaggeration: 10, baseMm: 2, seaFloorM: 1000, depthStretch: 4, buildings: false, buildingDefaultM: 7 };
   const kml = core.printKml({ centre, set });
   assert.match(kml, /Rock &amp; &quot;Roll&quot; &lt;Hills&gt;/);
   assert.doesNotMatch(kml, /metresPerPixel/);
@@ -432,4 +432,192 @@ test('a print KML records where the sea floor was read', () => {
   assert.match(kml, /<Data name="seaFloorZoom">.*<value>10<\/value>/);
   assert.match(kml, /<Data name="seaFloorMetresPerPixel">.*<value>111<\/value>/);
   assert.match(kml, /<Data name="seaFloorM">.*<value>200<\/value>/);
+});
+
+// ---------- buildings ----------
+
+const closedEdges = (tris) => {
+  const key = (p) => p.map((v) => v.toFixed(3)).join(',');
+  const edges = new Map();
+  const directed = new Set();
+  for (const t of tris) {
+    for (let k = 0; k < 3; k++) {
+      const a = key(t[k]), b = key(t[(k + 1) % 3]);
+      const e = a < b ? `${a}|${b}` : `${b}|${a}`;
+      edges.set(e, (edges.get(e) || 0) + 1);
+      directed.add(`${a}>${b}`);
+    }
+  }
+  return [...edges.values()].every((c) => c === 2) && directed.size === tris.length * 3;
+};
+const triples = (flat) => Array.from({ length: flat.length / 3 }, (_, t) => flat.slice(t * 3, t * 3 + 3));
+
+test('OSM heights: metres, feet, floors, and nothing', () => {
+  assert.equal(core.parseMetres('12'), 12);
+  assert.equal(core.parseMetres('12.5 m'), 12.5);
+  assert.equal(core.parseMetres('7,5'), 7.5);
+  near(core.parseMetres('100 ft'), 30.48, 1e-9);
+  near(core.parseMetres("40'"), 12.192, 1e-9);
+  near(core.parseMetres('12\'6"'), 3.81, 1e-9);
+  assert.equal(core.parseMetres('tall'), null);
+  assert.equal(core.buildingHeight({ height: '25', 'building:levels': '3' }), 25);
+  assert.equal(core.buildingHeight({ 'building:levels': '4' }), 12);
+  assert.equal(core.buildingHeight({ 'building:levels': '4', 'roof:levels': '1' }), 15);
+  assert.equal(core.buildingHeight({ height: 'unknown', 'building:levels': '2' }), 6);
+  assert.equal(core.buildingHeight({ building: 'yes' }), null);
+});
+
+test('joinRings closes a multipolygon outline drawn in pieces, either way round', () => {
+  const rings = core.joinRings([[[0, 0], [1, 0], [1, 1]], [[0, 0], [0, 1], [1, 1]], [[5, 5], [6, 5]]]);
+  assert.equal(rings.length, 1);
+  assert.deepEqual(rings[0], [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]);
+});
+
+test('clipToSquare cuts a ring at the square and keeps one inside whole', () => {
+  const across = core.clipToSquare([[-5, 2], [5, 2], [5, 4], [-5, 4]], 10);
+  assert.equal(Math.abs(core.ringArea2(across)) / 2, 10);
+  assert.ok(across.every(([x]) => x >= 0));
+  const inside = [[1, 1], [2, 1], [2, 2]];
+  assert.deepEqual(core.clipToSquare(inside, 10), inside);
+  assert.equal(core.clipToSquare([[20, 20], [21, 20], [21, 21]], 10), null);
+});
+
+test('building footprints: model millimetres, wound for the mesh, junk left out', () => {
+  const bounds = { west: 0, east: 0.01, south: 0, north: 0.01 };
+  const way = (tags, pts) => ({ type: 'way', tags, geometry: [...pts, pts[0]].map(([lon, lat]) => ({ lon, lat })) });
+  const square = (x, y, s) => [[x, y], [x, y + s], [x + s, y + s], [x + s, y]]; // clockwise, as OSM often has it
+  const osm = { elements: [
+    way({ building: 'yes', height: '30' }, square(0.002, 0.002, 0.002)),
+    way({ building: 'roof' }, square(0.005, 0.005, 0.002)),
+    way({ building: 'yes' }, square(0.008, 0.008, 0.00001)), // a few cm across
+    way({ building: 'house', 'building:levels': '2' }, square(0.009, 0.004, 0.002)), // over the east edge
+    { type: 'relation', tags: { building: 'yes', type: 'multipolygon' }, members: [
+      { type: 'way', role: 'outer', geometry: [[0.0001, 0.006], [0.004, 0.006], [0.004, 0.0099]].map(([lon, lat]) => ({ lon, lat })) },
+      { type: 'way', role: 'outer', geometry: [[0.004, 0.0099], [0.0001, 0.0099], [0.0001, 0.006]].map(([lon, lat]) => ({ lon, lat })) },
+      { type: 'way', role: 'inner', geometry: [...square(0.001, 0.007, 0.001), [0.001, 0.007]].map(([lon, lat]) => ({ lon, lat })) },
+    ] },
+  ] };
+  const fps = core.buildingFootprints(osm, bounds, 100);
+  assert.equal(fps.length, 3);
+  const [tower, edge, court] = fps;
+  assert.equal(tower.heightM, 30);
+  near(Math.abs(core.ringArea2(tower.rings[0])) / 2, 400, 1e-6); // 20 x 20 mm
+  assert.ok(fps.every((f) => core.ringArea2(f.rings[0]) > 0));
+  assert.ok(edge.rings[0].every(([x]) => x <= 100 + 1e-9));
+  near(Math.abs(core.ringArea2(edge.rings[0])) / 2, 200, 1e-6); // half of it
+  assert.equal(edge.heightM, 6);
+  assert.equal(court.heightM, null);
+  assert.equal(court.rings.length, 2);
+  assert.ok(core.ringArea2(court.rings[1]) < 0);
+});
+
+test('a courtyard cut by the square is filled in, so the solid stays closed', () => {
+  const bounds = { west: 0, east: 0.01, south: 0, north: 0.01 };
+  const ring = (pts) => [...pts, pts[0]].map(([lon, lat]) => ({ lon, lat }));
+  const osm = { elements: [{ type: 'relation', tags: { building: 'yes', type: 'multipolygon' }, members: [
+    { type: 'way', role: 'outer', geometry: ring([[-0.002, 0.002], [0.003, 0.002], [0.003, 0.006], [-0.002, 0.006]]) },
+    { type: 'way', role: 'inner', geometry: ring([[-0.001, 0.003], [-0.001, 0.005], [0.001, 0.005], [0.001, 0.003]]) },
+  ] }] };
+  const [fp] = core.buildingFootprints(osm, bounds, 100);
+  assert.equal(fp.rings.length, 1);
+  const tris = triples(core.buildingTriangles([{ ...fp, heightM: 10, groundM: 0 }], new Array(121).fill(3), 11,
+    { widthMm: 100, toMm: () => 3, mmPerMetre: 0.1, exaggeration: 1 }));
+  assert.ok(closedEdges(tris));
+});
+
+test('convex hull, and a closed check that catches a gap', () => {
+  assert.deepEqual(core.convexHull([[0, 0], [2, 0], [1, 1], [2, 2], [0, 2], [1, 0]]), [[0, 0], [2, 0], [2, 2], [0, 2]]);
+  const box = core.buildingTriangles([{ rings: [[[0, 0], [2, 0], [2, 2], [0, 2]]], heightM: 10, groundM: 0 }], [3, 3, 3, 3], 2,
+    { widthMm: 10, toMm: () => 3, mmPerMetre: 0.1, exaggeration: 1 });
+  assert.ok(core.isClosed(box));
+  assert.ok(!core.isClosed(box.slice(3)));
+});
+
+test('an outline that crosses itself still prints as a closed solid', () => {
+  const opts = { widthMm: 10, toMm: () => 3, mmPerMetre: 0.1, exaggeration: 1 };
+  const bowtie = { rings: [[[0, 0], [2, 2], [2, 0], [0, 2]]], heightM: 10, groundM: 0 };
+  const flat = core.buildingTriangles([bowtie], [3, 3, 3, 3], 2, opts);
+  assert.ok(core.isClosed(flat));
+  assert.ok(closedEdges(triples(flat)));
+  const sliver = { rings: [[[0, 0], [1, 1], [2, 2]]], heightM: 10, groundM: 0 };
+  assert.deepEqual(core.buildingTriangles([sliver], [3, 3, 3, 3], 2, opts), []);
+});
+
+test('placeBuildings flattens a tower the terrain already holds, and leaves bare ground alone', () => {
+  const n = 21; // 1 mm a cell on a 20 mm model of a 200 m square: 10 m a cell
+  const set = { sideKm: 0.2, widthMm: 20, padM: 15, defaultM: 7 };
+  const tower = { rings: [[[8, 8], [12, 8], [12, 12], [8, 12]]], heightM: 100 };
+  const house = { rings: [[[2, 2], [4, 2], [4, 4], [2, 4]]], heightM: null };
+  const ground = new Array(n * n).fill(5);
+  const baked = ground.map((h, k) => {
+    const i = k % n, j = Math.floor(k / n);
+    return i >= 8 && i <= 12 && j >= 8 && j <= 12 ? 85 : h; // row 0 north, but the tower is in the middle either way
+  });
+  const bare = core.placeBuildings([tower, house], ground, n, set);
+  assert.deepEqual(bare.heights, ground);
+  assert.deepEqual(bare.buildings.map((b) => [b.groundM, b.inData, b.tagged, b.heightM]), [[5, false, true, 100], [5, false, false, 7]]);
+  const city = core.placeBuildings([tower, house], baked, n, set);
+  assert.equal(city.buildings[0].inData, true);
+  assert.equal(city.buildings[0].groundM, 5);
+  assert.equal(city.buildings[1].inData, false);
+  assert.ok(city.heights.every((h) => h === 5));
+  assert.equal(baked[10 * n + 10], 85); // the input grid is left as it was
+});
+
+test('a building beside deep water stands on its own ground, and the shore is left alone', () => {
+  const n = 21;
+  const set = { sideKm: 0.2, widthMm: 20, padM: 15, defaultM: 7 };
+  // land at 2 m in the west half, a canal 11 m deep in the east (Dubai Marina)
+  const grid = Array.from({ length: n * n }, (_, k) => (k % n <= 10 ? 2 : -11));
+  const quay = { rings: [[[7, 8], [10, 8], [10, 12], [7, 12]]], heightM: null };
+  const placed = core.placeBuildings([quay], grid, n, set);
+  assert.equal(placed.buildings[0].groundM, 2);
+  assert.equal(placed.buildings[0].inData, false);
+  assert.deepEqual(placed.heights, grid);
+});
+
+test('placeBuildings tells a city held as a surface model from bare earth', () => {
+  const n = 41; // 1 mm a cell on a 40 mm model of a 400 m square: 10 m a cell
+  const set = { sideKm: 0.4, widthMm: 40, padM: 15, defaultM: 7 };
+  const block = (x, y) => ({ rings: [[[x, y], [x + 3, y], [x + 3, y + 3], [x, y + 3]]], heightM: 30 });
+  const blocks = [block(4, 4), block(10, 4), block(4, 10), block(10, 10), block(16, 4), block(16, 10)];
+  const bare = new Array(n * n).fill(5);
+  // the data blurs the blocks into a plateau 10 m up, and the open ground east of them stays at 5 m
+  const lifted = bare.map((h, k) => ((k % n) <= 22 && Math.floor(k / n) >= 24 ? 15 : h));
+  near(core.placeBuildings(blocks, bare, n, set).liftM, 0, 1e-9);
+  const city = core.placeBuildings(blocks, lifted, n, set);
+  near(city.liftM, 10, 1e-9);
+  assert.ok(city.liftM > core.LIFTED_M);
+  assert.equal(core.placeBuildings(blocks.slice(0, 2), bare, n, set).liftM, null);
+});
+
+test('each building is a closed solid standing on the terrain, courtyards and all', () => {
+  const n = 11;
+  const zMm = Array.from({ length: n * n }, (_, k) => 3 + (k % n) * 0.1); // rising to the east
+  const scale = { widthMm: 10, toMm: (m) => 3 + m * 0.01, mmPerMetre: 0.01, exaggeration: 2 };
+  const court = { rings: [[[1, 1], [6, 1], [6, 6], [1, 6]], [[2, 2], [2, 5], [5, 5], [5, 2]]], heightM: 50, groundM: 10 };
+  const lshape = { rings: [[[7, 1], [9, 1], [9, 4], [8, 4], [8, 2], [7, 2]]], heightM: 20, groundM: 0 };
+  const flat = core.buildingTriangles([court, lshape], zMm, n, scale);
+  const tris = triples(flat);
+  assert.ok(closedEdges(tris));
+  const zs = flat.map((p) => p[2]);
+  near(Math.max(...zs), 3 + 0.1 + 1, 1e-9); // the courtyard block: ground 10 m, then 50 m at x2
+  // floors sit under the lowest terrain the footprint covers
+  assert.ok(tris.filter((t) => t.every((p) => p[2] < 3))[0]);
+  // the whole print, terrain and buildings, is still closed
+  assert.ok(closedEdges(core.readStl(core.terrainStl(zMm, n, 10, flat)).map((t) => t.v)));
+  const read = core.readStl(core.terrainStl(zMm, n, 10, flat));
+  const roofs = read.slice(read.length - tris.length).filter((t) => t.v.every((p) => p[2] > 3.5));
+  assert.ok(roofs.length > 0 && roofs.every((t) => t.normal[2] > 0.99));
+});
+
+test('a print KML keeps the building settings and what came of them', () => {
+  const centre = { name: 'Sunny Isles Beach', lat: 25.94, lon: -80.12 };
+  const set = { sideKm: 1, widthMm: 120, cells: 200, exaggeration: 1, baseMm: 3, seaFloorM: 0, depthStretch: 1, buildings: true, buildingDefaultM: 10 };
+  const model = { zoom: 14, pixelM: 8.6, lowM: 0, highM: 4, reliefMm: 0.5, triangles: 5000,
+    buildings: { count: 111, tagged: 59, inData: 1, tallestM: 203.4, readAt: '2026-10-16' } };
+  const kml = core.printKml({ centre, set, model });
+  assert.match(kml, /<Data name="buildingCount">.*<value>111<\/value>/);
+  assert.match(kml, /<Data name="tallestBuildingM">.*<value>203<\/value>/);
+  assert.deepEqual(core.parsePrintKml(kml).set, set);
 });

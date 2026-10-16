@@ -2,6 +2,8 @@
 // drive-time grids, and the KML/CSV writers. No DOM, no network, so every
 // function here runs under `node --test`.
 
+import earcut from './earcut.js';
+
 export const EARTH_KM = 6371.0088;
 const RAD = Math.PI / 180;
 
@@ -576,9 +578,10 @@ export function printHeights(heights, { sideKm, widthMm, exaggeration = 1, baseM
   for (const h of metres) { if (h < lo) lo = h; if (h > hi) hi = h; }
   const mmPerMetre = widthMm / (sideKm * 1000);
   const up = (h) => h * mmPerMetre * (h > 0 ? exaggeration : depthStretch); // mm above sea level
-  const mm = metres.map((h) => baseMm + up(h) - up(lo));
+  const toMm = (h) => baseMm + up(Math.max(floor, h)) - up(lo);
+  const mm = metres.map(toMm);
   return {
-    mm, lowM: lo, highM: hi, reliefMm: up(hi) - up(lo), mmPerMetre,
+    mm, toMm, lowM: lo, highM: hi, reliefMm: up(hi) - up(lo), mmPerMetre,
     seaMm: lo < 0 ? baseMm - up(lo) : null, // where sea level sits on the model, when anything is below it
   };
 }
@@ -604,6 +607,8 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ['baseMm', 'Base under the lowest point (mm)', set.baseMm],
     ['seaFloorM', 'Sea floor down to (m, 0 cuts it at sea level)', set.seaFloorM ?? 0],
     ['depthStretch', 'Depth stretch (x)', set.depthStretch ?? set.exaggeration],
+    ['buildings', 'Buildings from OpenStreetMap (1 yes, 0 no)', set.buildings ? 1 : 0],
+    ['buildingDefaultM', 'Building height where OSM has none (m)', set.buildingDefaultM ?? DEFAULT_BUILDING_M],
   ];
   const derived = [
     ['boundsNorth', 'North edge', b.north.toFixed(6)],
@@ -631,6 +636,17 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
       ['metresPerMmVertical', 'Metres of ground per mm of model height', +vertical.toFixed(2)],
       ['triangles', 'STL triangles', model.triangles],
     );
+    if (model.buildings) {
+      const b = model.buildings;
+      derived.push(
+        ['buildingCount', 'Buildings printed', b.count],
+        ['buildingsWithHeight', 'Buildings with their own height in OSM', b.tagged],
+        ['buildingsInElevation', 'Buildings already in the elevation data (flattened under)', b.inData],
+        ['tallestBuildingM', 'Tallest building (m)', Math.round(b.tallestM)],
+        ...(b.liftM != null ? [['groundLiftM', 'Ground under buildings above the open ground near them (m)', +b.liftM.toFixed(1)]] : []),
+        ['buildingSource', 'Building data', `OpenStreetMap contributors (ODbL), read ${b.readAt}`],
+      );
+    }
   }
   if (stlFile) derived.push(['stlFile', 'STL file', stlFile]);
   derived.push(['made', 'Made', made.toISOString()]);
@@ -694,6 +710,9 @@ export function parsePrintKml(text) {
       // files from before the sea floor cut it at sea level
       seaFloorM: values.seaFloorM == null ? 0 : num('seaFloorM', 0, 11100),
       depthStretch: values.depthStretch == null ? exaggeration : num('depthStretch', 0.1, 100),
+      // files from before buildings have none
+      buildings: values.buildings === '1',
+      buildingDefaultM: values.buildingDefaultM == null ? DEFAULT_BUILDING_M : num('buildingDefaultM', 1, 100),
     },
   };
 }
@@ -702,8 +721,10 @@ export function parsePrintKml(text) {
  * A closed, printable binary STL of an n x n height grid (row 0 north): the
  * terrain on top, four walls down to z = 0, and a bottom fanned from its centre.
  * Every edge is shared by exactly two triangles, so slicers take it as solid.
+ * extra is more triangles (three points each) to write after the terrain's,
+ * such as buildingTriangles.
  */
-export function terrainStl(zMm, n, widthMm) {
+export function terrainStl(zMm, n, widthMm, extra = []) {
   const step = widthMm / (n - 1);
   const X = (i) => i * step;
   const Y = (j) => (n - 1 - j) * step; // north is +y
@@ -735,6 +756,7 @@ export function terrainStl(zMm, n, widthMm) {
     tri(bot0, top1, top0);
     tri(centre, bot1, bot0); // bottom, facing down
   }
+  for (const p of extra) tris.push(p);
   const count = tris.length / 3;
   const buf = new ArrayBuffer(84 + count * 50);
   const view = new DataView(buf);
@@ -761,6 +783,368 @@ export function readStl(buf) {
   for (let t = 0, o = 84; t < count; t++, o += 50) {
     const f = (k) => view.getFloat32(o + k * 4, true);
     tris.push({ normal: [f(0), f(1), f(2)], v: [[f(3), f(4), f(5)], [f(6), f(7), f(8)], [f(9), f(10), f(11)]] });
+  }
+  return tris;
+}
+
+// ---------- buildings ----------
+
+/** Metres a storey adds, for buildings that give floors but no height. */
+export const STOREY_M = 3;
+/** A building's height when OSM gives neither height nor floors, unless chosen otherwise: two floors. */
+export const DEFAULT_BUILDING_M = 7;
+/** Buildings come from OpenStreetMap only on squares this size or smaller: past it most are too small to print. */
+export const BUILDINGS_MAX_KM = 2;
+/**
+ * When the ground under the buildings stands this far above the open ground
+ * near them, the elevation data holds the city's buildings. Measured on 2 km
+ * squares: Manhattan 0.2 m, Dubai Marina 1.3 m, Mong Kok 8 m.
+ */
+export const LIFTED_M = 4;
+/** Footprints smaller than this on the model (mm²) are left out, as too small to print. */
+export const MIN_FOOTPRINT_MM2 = 0.4;
+
+/** The Overpass query for every building in a lon/lat box, with its outline. */
+export function overpassBuildingsQuery(b) {
+  const box = [b.south, b.west, b.north, b.east].map((v) => v.toFixed(6)).join(',');
+  return `[out:json][timeout:90];(way["building"](${box});relation["building"]["type"="multipolygon"](${box}););out geom;`;
+}
+
+/** Metres from an OSM length ("12", "12.5 m", "40 ft", "40'", "12'6\""), or null. */
+export function parseMetres(v) {
+  if (v == null) return null;
+  const s = String(v).trim().replace(',', '.');
+  let m = s.match(/^(\d+(?:\.\d+)?)\s*(?:m|metres?|meters?)?$/i);
+  if (m) return Number(m[1]);
+  m = s.match(/^(\d+(?:\.\d+)?)\s*(?:ft|feet|')$/i);
+  if (m) return Number(m[1]) * 0.3048;
+  m = s.match(/^(\d+)'\s*(\d+(?:\.\d+)?)"$/);
+  if (m) return Number(m[1]) * 0.3048 + Number(m[2]) * 0.0254;
+  return null;
+}
+
+/**
+ * A building's height in metres from its OSM tags: height, or else its floors
+ * (building:levels plus roof:levels) at STOREY_M each. null when it has neither.
+ */
+export function buildingHeight(tags = {}) {
+  const h = parseMetres(tags.height);
+  if (h > 0) return h;
+  const levels = Number(String(tags['building:levels'] ?? '').replace(',', '.'));
+  if (levels > 0) return (levels + (Number(tags['roof:levels']) || 0)) * STOREY_M;
+  return null;
+}
+
+/**
+ * Closed rings from ways that meet end to end, as a multipolygon's members do.
+ * Points are [x, y] pairs matched exactly; a ring that never closes is dropped.
+ */
+export function joinRings(ways) {
+  const same = (a, b) => a[0] === b[0] && a[1] === b[1];
+  const left = ways.filter((w) => w.length > 1);
+  const rings = [];
+  while (left.length) {
+    let ring = left.shift();
+    while (!same(ring[0], ring[ring.length - 1])) {
+      const end = ring[ring.length - 1];
+      const k = left.findIndex((w) => same(w[0], end) || same(w[w.length - 1], end));
+      if (k < 0) break;
+      const [w] = left.splice(k, 1);
+      ring = ring.concat(same(w[0], end) ? w.slice(1) : w.slice(0, -1).reverse());
+    }
+    if (ring.length >= 4 && same(ring[0], ring[ring.length - 1])) rings.push(ring);
+  }
+  return rings;
+}
+
+/** Twice the signed area of a ring (no repeated last point): positive when counter-clockwise. */
+export function ringArea2(ring) {
+  let a = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) a += (ring[j][0] - ring[i][0]) * (ring[j][1] + ring[i][1]);
+  return a;
+}
+
+/** Whether point p is inside a ring, by ray casting. */
+export function inRing(p, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if ((yi > p[1]) !== (yj > p[1]) && p[0] < ((xj - xi) * (p[1] - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** The distance from point p to a ring's outline. */
+export function distanceToRing(p, ring) {
+  let best = Infinity;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [ax, ay] = ring[j], [bx, by] = ring[i];
+    const dx = bx - ax, dy = by - ay;
+    const t = dx || dy ? Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - ay) * dy) / (dx * dx + dy * dy))) : 0;
+    best = Math.min(best, Math.hypot(p[0] - ax - t * dx, p[1] - ay - t * dy));
+  }
+  return best;
+}
+
+/** A ring cut to the square from 0 to w on both axes (Sutherland-Hodgman), without repeated points. */
+export function clipToSquare(ring, w) {
+  const cut = (pts, k, lim, above) => {
+    const inside = (p) => (above ? p[k] >= lim : p[k] <= lim);
+    const out = [];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      if (inside(a)) out.push(a);
+      if (inside(a) !== inside(b)) {
+        const t = (lim - a[k]) / (b[k] - a[k]);
+        out.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
+      }
+    }
+    return out;
+  };
+  let pts = ring;
+  for (const [k, lim, above] of [[0, 0, true], [0, w, false], [1, 0, true], [1, w, false]]) pts = cut(pts, k, lim, above);
+  const out = pts.filter((p, i) => {
+    const q = pts[(i + 1) % pts.length];
+    return Math.abs(p[0] - q[0]) > 1e-6 || Math.abs(p[1] - q[1]) > 1e-6;
+  });
+  return out.length >= 3 ? out : null;
+}
+
+const NOT_BUILT = new Set(['no', 'roof', 'construction', 'proposed', 'demolished', 'destroyed']);
+
+/**
+ * Building footprints from an Overpass reply, in model millimetres (x east, y
+ * north, the square's south-west corner at 0,0) and cut to the square. Each is
+ * { rings, heightM }: the outline counter-clockwise, then any courtyards
+ * clockwise, with heightM null where OSM has no height. Roofs on posts,
+ * underground buildings and footprints too small to print are left out.
+ */
+export function buildingFootprints(osm, bounds, widthMm) {
+  const toMm = (g) => [((g.lon - bounds.west) / (bounds.east - bounds.west)) * widthMm,
+    ((g.lat - bounds.south) / (bounds.north - bounds.south)) * widthMm];
+  const open = (ring) => ring.slice(0, -1); // drop the repeated closing point
+  const out = [];
+  for (const el of osm.elements || []) {
+    const tags = el.tags || {};
+    if (!tags.building || NOT_BUILT.has(tags.building) || tags.location === 'underground') continue;
+    let outers = [], inners = [];
+    if (el.type === 'way') {
+      const g = (el.geometry || []).map(toMm);
+      if (g.length >= 4 && g[0][0] === g[g.length - 1][0] && g[0][1] === g[g.length - 1][1]) outers = [open(g)];
+    } else if (el.type === 'relation') {
+      const role = (r) => joinRings((el.members || [])
+        .filter((m) => m.type === 'way' && (m.role || 'outer') === r && m.geometry)
+        .map((m) => m.geometry.map(toMm))).map(open);
+      outers = role('outer');
+      inners = role('inner');
+    }
+    const heightM = buildingHeight(tags);
+    for (const outer of outers) {
+      const shell = clipToSquare(outer, widthMm);
+      if (!shell) continue;
+      // A courtyard the square's edge cuts would touch the cut outline, so it is filled in instead.
+      const holes = inners.filter((h) => inRing(h[0], outer) && h.every(([x, y]) => x > 0 && x < widthMm && y > 0 && y < widthMm));
+      const area = Math.abs(ringArea2(shell)) / 2 - holes.reduce((s, h) => s + Math.abs(ringArea2(h)) / 2, 0);
+      if (area < MIN_FOOTPRINT_MM2) continue;
+      if (ringArea2(shell) < 0) shell.reverse();
+      for (const h of holes) if (ringArea2(h) > 0) h.reverse();
+      out.push({ rings: [shell, ...holes], heightM });
+    }
+  }
+  return out;
+}
+
+const quantile = (values, q) => {
+  const s = [...values].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor(q * s.length))];
+};
+
+/**
+ * Stands each footprint on the n x n terrain grid (metres, row 0 north) and
+ * finds the buildings the elevation data already holds.
+ *
+ * A building's ground is the terrain inside its footprint (the median of the
+ * grid there), since the elevation data is bare earth under the buildings
+ * OpenStreetMap maps in every city tried: Sunny Isles Beach, Midtown Miami,
+ * Manhattan and Dubai Marina. A building is in the data when the terrain
+ * inside it stands more than max(4 m, 40% of its height) above the upper
+ * quartile of the terrain round a box padM outside it: a bump above nearly
+ * everything around, which water or a highway ramp on one side can't fake.
+ * Its ground is then the median of that ring instead, and the grid within
+ * padM of it is lowered to that, so the building doesn't stand twice.
+ *
+ * Returns the grid, flattened where needed, liftM (how far the ground under
+ * the buildings stands above the open ground near them, the median over
+ * buildings, or null with too few to tell: over LIFTED_M, the elevation data
+ * holds the whole city) and per building { rings, heightM, tagged, groundM,
+ * inData }, heightM falling back to defaultM.
+ */
+export function placeBuildings(footprints, heights, n, { sideKm, widthMm, padM, defaultM }) {
+  const step = widthMm / (n - 1);
+  const mmPerM = widthMm / (sideKm * 1000);
+  const padMm = padM * mmPerM;
+  const node = (i, j) => heights[j * n + i];
+  const at = (x, y) => { // bilinear on the grid, clamped to the square
+    const gi = Math.max(0, Math.min(n - 1, x / step)), gj = Math.max(0, Math.min(n - 1, n - 1 - y / step));
+    const i0 = Math.min(n - 2, Math.floor(gi)), j0 = Math.min(n - 2, Math.floor(gj));
+    const ti = gi - i0, tj = gj - j0;
+    return node(i0, j0) * (1 - ti) * (1 - tj) + node(i0 + 1, j0) * ti * (1 - tj) +
+      node(i0, j0 + 1) * (1 - ti) * tj + node(i0 + 1, j0 + 1) * ti * tj;
+  };
+  // the grid nodes within a box, as [i, j, x, y]
+  const nodesIn = (x0, y0, x1, y1) => {
+    const list = [];
+    for (let i = Math.max(0, Math.ceil(x0 / step)); i <= Math.min(n - 1, Math.floor(x1 / step)); i++) {
+      for (let j = Math.max(0, Math.ceil(n - 1 - y1 / step)); j <= Math.min(n - 1, Math.floor(n - 1 - y0 / step)); j++) {
+        list.push([i, j, i * step, (n - 1 - j) * step]);
+      }
+    }
+    return list;
+  };
+  const placed = footprints.map(({ rings, heightM }) => {
+    const outer = rings[0];
+    const xs = outer.map((p) => p[0]), ys = outer.map((p) => p[1]);
+    const box = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+    const [x0, y0, x1, y1] = [box[0] - padMm, box[1] - padMm, box[2] + padMm, box[3] + padMm];
+    const around = [];
+    for (let k = 0; k < 4; k++) {
+      const t = k / 4;
+      around.push(at(x0 + t * (x1 - x0), y0), at(x1, y0 + t * (y1 - y0)), at(x1 - t * (x1 - x0), y1), at(x0, y1 - t * (y1 - y0)));
+    }
+    const inside = nodesIn(...box).filter(([, , x, y]) => inRing([x, y], outer)).map(([i, j]) => node(i, j));
+    const mid = outer.reduce((s, p) => [s[0] + p[0] / outer.length, s[1] + p[1] / outer.length], [0, 0]);
+    const insideM = inside.length ? quantile(inside, 0.5) : at(...mid);
+    const h = heightM ?? defaultM;
+    const inData = insideM - quantile(around, 0.75) > Math.max(4, 0.4 * h);
+    const groundM = inData ? quantile(around, 0.5) : insideM;
+    return { rings, heightM: h, tagged: heightM != null, groundM, inData, box: [x0, y0, x1, y1], mid, insideM, measured: inside.length >= 2 };
+  });
+  const flat = heights.slice();
+  for (const b of placed) {
+    if (!b.inData) continue;
+    for (const [i, j, x, y] of nodesIn(...b.box)) {
+      if (inRing([x, y], b.rings[0]) || distanceToRing([x, y], b.rings[0]) <= padMm) {
+        flat[j * n + i] = Math.min(flat[j * n + i], b.groundM);
+      }
+    }
+  }
+  // A city the elevation holds as a surface model lifts every building's
+  // surroundings too, so no one building stands out (Mong Kok reads 11 to 52 m
+  // over ground near 5 m). So compare the ground under each building with the
+  // open ground, nothing built within 30 m, inside 150 m of it.
+  const clearMm = 30 * mmPerM, nearMm = 150 * mmPerM;
+  const built = new Uint8Array(n * n);
+  for (const { rings: [outer] } of placed) {
+    const xs = outer.map((p) => p[0]), ys = outer.map((p) => p[1]);
+    for (const [i, j, x, y] of nodesIn(Math.min(...xs) - clearMm, Math.min(...ys) - clearMm, Math.max(...xs) + clearMm, Math.max(...ys) + clearMm)) {
+      if (!built[j * n + i] && (inRing([x, y], outer) || distanceToRing([x, y], outer) < clearMm)) built[j * n + i] = 1;
+    }
+  }
+  const lifts = [];
+  for (const b of placed) {
+    if (!b.measured) continue;
+    const open = nodesIn(b.mid[0] - nearMm, b.mid[1] - nearMm, b.mid[0] + nearMm, b.mid[1] + nearMm)
+      .filter(([i, j]) => !built[j * n + i]).map(([i, j]) => node(i, j));
+    if (open.length >= 5) lifts.push(b.insideM - quantile(open, 0.5));
+  }
+  const liftM = lifts.length >= 5 ? quantile(lifts, 0.5) : null;
+  return { heights: flat, liftM, buildings: placed.map(({ box, mid, insideM, measured, ...b }) => b) };
+}
+
+/** The convex hull of points, counter-clockwise (Andrew's monotone chain). */
+export function convexHull(points) {
+  const pts = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const half = (list) => {
+    const h = [];
+    for (const p of list) {
+      while (h.length >= 2 && cross(h[h.length - 2], h[h.length - 1], p) <= 0) h.pop();
+      h.push(p);
+    }
+    h.pop();
+    return h;
+  };
+  return [...half(pts), ...half(pts.reverse())];
+}
+
+/** Whether triangles (three points each) close up: every edge in two of them, once each way. */
+export function isClosed(tris) {
+  const edges = new Map();
+  for (let t = 0; t < tris.length; t += 3) {
+    for (let k = 0; k < 3; k++) {
+      const a = tris[t + k].join(','), b = tris[t + (k + 1) % 3].join(',');
+      edges.set(`${a}>${b}`, (edges.get(`${a}>${b}`) || 0) + 1);
+    }
+  }
+  for (const [e, count] of edges) {
+    const [a, b] = e.split('>');
+    if (count !== 1 || edges.get(`${b}>${a}`) !== 1) return false;
+  }
+  return tris.length > 0;
+}
+
+/**
+ * A footprint raised from bottom to top as triangles: the roof and floor
+ * from earcut, and the walls. The outline runs counter-clockwise and
+ * courtyards clockwise, so every wall faces out of the solid.
+ */
+function prism(rings, bottom, top) {
+  const tris = [];
+  const tri = (a, b, c) => tris.push(a, b, c);
+  const flat = [], holes = [];
+  for (const r of rings) {
+    if (flat.length) holes.push(flat.length / 2);
+    for (const p of r) flat.push(p[0], p[1]);
+  }
+  const idx = earcut(flat, holes);
+  if (!idx.length) return tris; // no roof, no solid: only walls, folded flat
+  const pt = (k, z) => [flat[k * 2], flat[k * 2 + 1], z];
+  for (let t = 0; t < idx.length; t += 3) {
+    let [a, b, c] = [idx[t], idx[t + 1], idx[t + 2]];
+    // earcut doesn't promise a winding: make the roof counter-clockwise from above
+    const cross = (flat[b * 2] - flat[a * 2]) * (flat[c * 2 + 1] - flat[a * 2 + 1]) - (flat[c * 2] - flat[a * 2]) * (flat[b * 2 + 1] - flat[a * 2 + 1]);
+    if (cross < 0) [b, c] = [c, b];
+    tri(pt(a, top), pt(b, top), pt(c, top));
+    tri(pt(a, bottom), pt(c, bottom), pt(b, bottom));
+  }
+  for (const r of rings) {
+    for (let k = 0; k < r.length; k++) {
+      const p = r[k], q = r[(k + 1) % r.length];
+      const b0 = [p[0], p[1], bottom], b1 = [q[0], q[1], bottom], t0 = [p[0], p[1], top], t1 = [q[0], q[1], top];
+      tri(b0, b1, t1);
+      tri(b0, t1, t0);
+    }
+  }
+  return tris;
+}
+
+/**
+ * Each placed building as its own closed solid, as STL triangles (three
+ * points each) to add to the terrain's. The solid's floor sits just under the
+ * lowest terrain beneath it, and its roof is its ground plus its height, at
+ * the land's height stretch. zMm is the terrain in mm and toMm turns metres
+ * into model height the same way (both from printHeights).
+ */
+export function buildingTriangles(buildings, zMm, n, { widthMm, toMm, mmPerMetre, exaggeration }) {
+  const step = widthMm / (n - 1);
+  const tris = [];
+  for (const { rings, heightM, groundM } of buildings) {
+    const outer = rings[0];
+    const xs = outer.map((p) => p[0]), ys = outer.map((p) => p[1]);
+    // the terrain over a grid cell is never below its lowest corner
+    let low = Infinity;
+    for (let i = Math.max(0, Math.floor(Math.min(...xs) / step)); i <= Math.min(n - 1, Math.ceil(Math.max(...xs) / step)); i++) {
+      for (let j = Math.max(0, Math.floor(n - 1 - Math.max(...ys) / step)); j <= Math.min(n - 1, Math.ceil(n - 1 - Math.min(...ys) / step)); j++) {
+        low = Math.min(low, zMm[j * n + i]);
+      }
+    }
+    const bottom = Math.max(0, low - 0.2);
+    const top = Math.max(bottom + 0.4, toMm(groundM) + heightM * mmPerMetre * exaggeration);
+    // A broken outline in OSM (crossing itself, or courtyards touching it) can't be
+    // closed: try it without its courtyards, then as the outline's convex hull.
+    // A sliver with no area closes no way at all, and is left out.
+    const solid = [rings, [rings[0]], [convexHull(rings[0])]].map((r) => prism(r, bottom, top)).find(isClosed) || [];
+    for (const p of solid) tris.push(p);
   }
   return tris;
 }

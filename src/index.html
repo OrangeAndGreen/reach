@@ -159,6 +159,8 @@
         <div class="field">
           <label for="print-side">Square</label>
           <select id="print-side">
+            <option value="0.5">0.5 km</option>
+            <option value="1">1 km</option>
             <option value="2">2 km</option>
             <option value="5">5 km</option>
             <option value="10">10 km</option>
@@ -215,9 +217,27 @@
           <label for="print-depth">Depth stretch <span id="print-depth-value"></span></label>
           <input id="print-depth" type="range" min="1" max="20" step="0.5" value="3">
         </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="print-buildings">Buildings</label>
+          <select id="print-buildings">
+            <option value="none" selected>None</option>
+            <option value="osm">From OpenStreetMap</option>
+          </select>
+        </div>
+        <div id="print-default-field" class="field" hidden>
+          <label for="print-default">Height where OSM has none</label>
+          <select id="print-default">
+            <option value="4">1 floor (4 m)</option>
+            <option value="7" selected>2 floors (7 m)</option>
+            <option value="10">3 floors (10 m)</option>
+          </select>
+        </div>
         <button id="print-run" class="primary">Build model</button>
       </div>
       <p id="print-sea-hint" class="hint" hidden>The sea floor comes from coarser tiles than the land (75 to 150 m per pixel, by latitude), so it prints softer. Lakes print as their flat surface.</p>
+      <p id="print-buildings-hint" class="hint" hidden></p>
       <div id="print-status" class="status" aria-live="polite"></div>
 
       <figure class="chart-wrap">
