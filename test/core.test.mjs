@@ -443,7 +443,7 @@ test('terrain STL faces outward: top normals point up, bottom down', () => {
 
 test('a print KML carries the square, the settings and the model figures', () => {
   const centre = { name: 'Mount Washington, New Hampshire', lat: 44.2706, lon: -71.3033 };
-  const set = { sideKm: 20, widthMm: 120, cells: 200, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: false, buildings: false, buildingDefaultM: 7 };
+  const set = { sideKm: 20, widthMm: 120, cells: 200, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: false, cornerMm: 5, buildings: false, buildingDefaultM: 7 };
   const model = { zoom: 12, pixelM: 27.8, lowM: 410, highM: 1916, reliefMm: 13.55, triangles: 81590 };
   const kml = core.printKml({ centre, set, model, stlFile: 'reach-mount-washington-20km.stl', made: new Date('2026-10-15T12:00:00Z') });
   assert.match(kml, /<Data name="heightStretch"><displayName>Height stretch \(x\)<\/displayName><value>1.5<\/value><\/Data>/);
@@ -465,7 +465,7 @@ test('a print KML carries the square, the settings and the model figures', () =>
 
 test('a print KML round-trips awkward names, and works without a model', () => {
   const centre = { name: 'Rock & "Roll" <Hills>', lat: -33.9, lon: 18.4 };
-  const set = { sideKm: 5, widthMm: 80, cells: 120, exaggeration: 10, baseMm: 2, seaFloorM: 1000, depthStretch: 4, shoreMm: 0.8, shoreRidge: false, label: false, buildings: false, buildingDefaultM: 7 };
+  const set = { sideKm: 5, widthMm: 80, cells: 120, exaggeration: 10, baseMm: 2, seaFloorM: 1000, depthStretch: 4, shoreMm: 0.8, shoreRidge: false, label: false, cornerMm: 0, buildings: false, buildingDefaultM: 7 };
   const kml = core.printKml({ centre, set });
   assert.match(kml, /Rock &amp; &quot;Roll&quot; &lt;Hills&gt;/);
   assert.doesNotMatch(kml, /metresPerPixel/);
@@ -677,7 +677,7 @@ test('each building is a closed solid standing on the terrain, courtyards and al
 
 test('a print KML keeps the building settings and what came of them', () => {
   const centre = { name: 'Sunny Isles Beach', lat: 25.94, lon: -80.12 };
-  const set = { sideKm: 1, widthMm: 120, cells: 200, exaggeration: 1, baseMm: 3, seaFloorM: 0, depthStretch: 1, shoreMm: 0, shoreRidge: false, label: false, buildings: true, buildingDefaultM: 10 };
+  const set = { sideKm: 1, widthMm: 120, cells: 200, exaggeration: 1, baseMm: 3, seaFloorM: 0, depthStretch: 1, shoreMm: 0, shoreRidge: false, label: false, cornerMm: 10, buildings: true, buildingDefaultM: 10 };
   const model = { zoom: 14, pixelM: 8.6, lowM: 0, highM: 4, reliefMm: 0.5, triangles: 5000,
     buildings: { count: 111, tagged: 59, inData: 1, tallestM: 203.4, readAt: '2026-10-16' } };
   const kml = core.printKml({ centre, set, model });
@@ -755,10 +755,63 @@ test('a labelled print is still one closed solid, the letters cut up into its bo
 
 test('a print KML keeps the label setting and what was cut', () => {
   const centre = { name: 'Mount Washington', lat: 44.2706, lon: -71.3033 };
-  const set = { sideKm: 20, widthMm: 120, cells: 200, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: true, buildings: false, buildingDefaultM: 7 };
+  const set = { sideKm: 20, widthMm: 120, cells: 200, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: true, cornerMm: 5, buildings: false, buildingDefaultM: 7 };
   const label = { lines: ['44.2706°N 71.3033°W', '20 × 20 KM', 'VERTICAL ×1.5'], pxMm: 0.9, depthMm: 0.6 };
   const kml = core.printKml({ centre, set, model: { zoom: 12, pixelM: 27.8, lowM: 410, highM: 1916, reliefMm: 13.55, triangles: 1, label } });
   assert.match(kml, /<Data name="labelText">.*<value>44.2706°N 71.3033°W \/ 20 × 20 KM \/ VERTICAL ×1.5<\/value>/);
   assert.match(kml, /<Data name="labelLetterMm">.*<value>6.3<\/value>/);
   assert.deepEqual(core.parsePrintKml(kml).set, set);
+});
+
+test('roundCorner moves only the corner boxes, onto the arc', () => {
+  const w = 100, r = 10;
+  // the corner itself lands on the arc's middle
+  const c = core.roundCorner([0, 0, 4], w, r);
+  near(Math.hypot(c[0] - r, c[1] - r), r, 1e-9);
+  near(c[0], c[1], 1e-9);
+  assert.equal(c[2], 4);
+  // every point of a box's outer sides lands on the arc, in every corner
+  for (const [x, y] of [[0, 3], [7, 0], [100, 2], [95, 100], [0, 96]]) {
+    const p = core.roundCorner([x, y, 0], w, r);
+    const cx = x < r ? r : w - r, cy = y < r ? r : w - r;
+    near(Math.hypot(p[0] - cx, p[1] - cy), r, 1e-9);
+  }
+  // the box's inner sides, and everything outside the boxes, stay put
+  for (const p of [[10, 4, 1], [4, 10, 1], [50, 0, 1], [0, 50, 1], [50, 50, 1], [10, 10, 1]]) {
+    assert.deepEqual(core.roundCorner(p, w, r), p);
+  }
+  // a point halfway along a ray moves half as far as the corner does
+  const half = core.roundCorner([5, 5, 0], w, r);
+  near(Math.hypot(half[0] - r, half[1] - r), r / 2, 1e-9);
+});
+
+test('a print with rounded corners is still one closed solid, inside the rounded square', () => {
+  const n = 41, w = 120, r = 5;
+  const zMm = Array.from({ length: n * n }, (_, k) => 3 + (k % 5) * 0.3);
+  const lab = core.bottomLabel(['44.2706°N 71.3033°W', '20 × 20 KM', 'VERTICAL ×1.5'], zMm, n, w);
+  const tris = core.readStl(core.terrainStl(zMm, n, w, [], lab, r));
+  assert.ok(closedEdges(tris.map((t) => t.v)));
+  // no point sticks out past an arc
+  for (const t of tris) {
+    for (const [x, y] of t.v) {
+      const cx = Math.min(Math.max(x, r), w - r), cy = Math.min(Math.max(y, r), w - r);
+      assert.ok(Math.hypot(x - cx, y - cy) <= r + 1e-4, `${x}, ${y} is outside the rounded square`);
+    }
+  }
+  // the walls stay upright, and the bottom covers the square less its corners: a little less, as each
+  // arc is a few chords at this grid, but well short of the square's 21.5 mm² more
+  const walls = tris.filter((t) => Math.abs(t.normal[2]) < 1e-6);
+  assert.ok(walls.length > 0);
+  const area = (t) => Math.abs((t.v[1][0] - t.v[0][0]) * (t.v[2][1] - t.v[0][1]) - (t.v[2][0] - t.v[0][0]) * (t.v[1][1] - t.v[0][1])) / 2;
+  const flatDown = tris.filter((t) => t.normal[2] < -0.99).reduce((a, t) => a + area(t), 0);
+  near(flatDown, w * w - (4 - Math.PI) * r * r, 5);
+  assert.ok(tris.filter((t) => t.v.every((p) => p[2] === 0)).every((t) => t.normal[2] < -0.99));
+});
+
+test('a print KML keeps the corner radius, and older files are square', () => {
+  const set = { sideKm: 5, widthMm: 80, cells: 120, exaggeration: 2, baseMm: 2, cornerMm: 10 };
+  const kml = core.printKml({ centre: { name: 'a', lat: 1, lon: 2 }, set });
+  assert.equal(core.parsePrintKml(kml).set.cornerMm, 10);
+  const old = kml.replace(/\s*<Data name="cornerMm">.*?<\/Data>/g, '');
+  assert.equal(core.parsePrintKml(old).set.cornerMm, 0);
 });

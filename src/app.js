@@ -695,6 +695,7 @@ function printSettings() {
     depthStretch: Number($('print-depth').value),
     ...shoreSetting($('print-shore').value),
     label: $('print-label').value === 'on',
+    cornerMm: Number($('print-corner').value),
     buildings: $('print-buildings').value === 'osm' && Number($('print-side').value) <= core.BUILDINGS_MAX_KM,
     buildingDefaultM: Number($('print-default').value),
   };
@@ -841,7 +842,7 @@ async function buildModel() {
     const extra = placed ? core.buildingTriangles(placed.buildings, scaled.mm, n, { ...set, ...scaled }) : [];
     if (buildings) buildings.triangles = extra.length / 3;
     const label = set.label ? core.bottomLabel(core.labelLines(centre, set), scaled.mm, n, set.widthMm) : null;
-    const stl = core.terrainStl(scaled.mm, n, set.widthMm, extra, label?.why ? null : label);
+    const stl = core.terrainStl(scaled.mm, n, set.widthMm, extra, label?.why ? null : label, set.cornerMm);
     state.model = {
       stl, scaled, set, centre, zoom: z, pixel, buildings, shore, label,
       seaZoom, seaPixel: seaZoom == null ? null : core.pixelMetres(centre.lat, seaZoom),
@@ -885,6 +886,7 @@ $('print-exag').addEventListener('change', buildModel);
 for (const id of ['print-width', 'print-cells', 'print-base', 'print-default']) $(id).addEventListener('change', buildModel);
 $('print-shore').addEventListener('change', () => { $('print-shore-hint').hidden = $('print-shore').value === '0'; buildModel(); });
 $('print-label').addEventListener('change', () => { $('print-label-hint').hidden = $('print-label').value !== 'on'; buildModel(); });
+$('print-corner').addEventListener('change', () => { $('print-corner-hint').hidden = $('print-corner').value === '0'; buildModel(); });
 setStretch(1.5);
 function showSeaControls() {
   const on = Number($('print-sea').value) > 0;
@@ -991,7 +993,7 @@ function renderPrintTable() {
   const scale = Math.round((set.sideKm * 1e6) / set.widthMm);
   const rows = [
     ['Ground covered', `${core.formatSide(set.sideKm, state.units)} square`],
-    ['Model', `${set.widthMm} × ${set.widthMm} × ${tallMm.toFixed(1)} mm`],
+    ['Model', `${set.widthMm} × ${set.widthMm} × ${tallMm.toFixed(1)} mm${set.cornerMm ? `, corners rounded ${set.cornerMm} mm` : ''}`],
     ['Lowest to highest', `${core.formatHeight(scaled.lowM, state.units)} to ${core.formatHeight(scaled.highM, state.units)}`],
     ['Map scale', `1 : ${scale.toLocaleString('en-US')}`],
     ['Height stretch', `× ${set.exaggeration}, so 1 mm of model is ${core.formatHeight(1 / (scaled.mmPerMetre * set.exaggeration), state.units)}`],
@@ -1139,6 +1141,8 @@ $('print-file').addEventListener('change', async () => {
   $('print-shore-hint').hidden = set.shoreMm === 0;
   $('print-label').value = set.label ? 'on' : 'none';
   $('print-label-hint').hidden = !set.label;
+  choose('print-corner', set.cornerMm, set.cornerMm ? `Rounded ${set.cornerMm} mm` : 'Square');
+  $('print-corner-hint').hidden = !set.cornerMm;
   $('print-buildings').value = set.buildings ? 'osm' : 'none';
   choose('print-default', set.buildingDefaultM, core.formatHeight(set.buildingDefaultM, state.units));
   showBuildingControls();
