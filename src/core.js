@@ -516,6 +516,34 @@ export function squareBounds(center, sideKm) {
 }
 
 /**
+ * Where a print's model lies on the ground: a square sideKm across centred on
+ * centre, modelled widthMm across, its top turned to face bearing (degrees
+ * clockwise from north). toLonLat takes model mm (x east before the turn, y
+ * north, 0 to widthMm) to a {lon, lat}, and toMm takes a lon/lat back to
+ * [x, y]. bounds is the lon/lat box the turned square fits in. Like
+ * squareBounds, it is even in degrees at the centre's latitude.
+ */
+export function printFrame(centre, sideKm, widthMm, bearing = 0) {
+  const deg = kmPerDegree(centre.lat);
+  const kmPerMm = sideKm / widthMm, mid = widthMm / 2;
+  const s = Math.sin(bearing * RAD), c = Math.cos(bearing * RAD);
+  const toLonLat = (x, y) => {
+    const u = (x - mid) * kmPerMm, v = (y - mid) * kmPerMm; // km right and up on the model
+    return { lon: centre.lon + (u * c + v * s) / deg.lon, lat: centre.lat + (v * c - u * s) / deg.lat };
+  };
+  const toMm = (lon, lat) => {
+    const e = (lon - centre.lon) * deg.lon, n = (lat - centre.lat) * deg.lat;
+    return [(e * c - n * s) / kmPerMm + mid, (e * s + n * c) / kmPerMm + mid];
+  };
+  const corners = [[0, 0], [widthMm, 0], [widthMm, widthMm], [0, widthMm]].map(([x, y]) => toLonLat(x, y));
+  const bounds = {
+    west: Math.min(...corners.map((p) => p.lon)), east: Math.max(...corners.map((p) => p.lon)),
+    south: Math.min(...corners.map((p) => p.lat)), north: Math.max(...corners.map((p) => p.lat)),
+  };
+  return { toLonLat, toMm, bounds };
+}
+
+/**
  * How much shorter on the ground the square's poleward edge is than its other
  * edge, as a fraction. The box is even in degrees, so both edges span the same
  * longitude: at 45 degrees about 3% at 200 km and 7.5% at 500 km.
@@ -603,13 +631,15 @@ export function withSeaFloor(fine, coarse) {
  * Scales a height grid to millimetres: the model is widthMm across, the base
  * slab is baseMm thick under the lowest point, and heights are stretched by
  * exaggeration. The sea floor is cut off seaFloorM below sea level (0 cuts it
- * at sea level), and depths are stretched by depthStretch.
+ * at sea level), and depths are stretched by depthStretch. used (from
+ * shapeCells) limits the lowest and highest points to the grid points a shape
+ * prints; the rest are scaled the same way and left unused.
  */
-export function printHeights(heights, { sideKm, widthMm, exaggeration = 1, baseMm = 3, seaFloorM = 0, depthStretch = exaggeration }) {
+export function printHeights(heights, { sideKm, widthMm, exaggeration = 1, baseMm = 3, seaFloorM = 0, depthStretch = exaggeration }, used = null) {
   const floor = seaFloorM ? -seaFloorM : 0; // not -0, which would show as a lowest point of "-0 m"
   const metres = heights.map((h) => Math.max(floor, h));
   let lo = Infinity, hi = -Infinity;
-  for (const h of metres) { if (h < lo) lo = h; if (h > hi) hi = h; }
+  metres.forEach((h, k) => { if (used && !used[k]) return; if (h < lo) lo = h; if (h > hi) hi = h; });
   const mmPerMetre = widthMm / (sideKm * 1000);
   const up = (h) => h * mmPerMetre * (h > 0 ? exaggeration : depthStretch); // mm above sea level
   const toMm = (h) => baseMm + up(Math.max(floor, h)) - up(lo);
@@ -627,7 +657,8 @@ export function printHeights(heights, { sideKm, widthMm, exaggeration = 1, baseM
  * model is optional; without it only the inputs are written.
  */
 export function printKml({ centre, set, model = null, stlFile = '', made = new Date() }) {
-  const b = squareBounds(centre, set.sideKm);
+  const frame = printFrame(centre, set.sideKm, set.widthMm, set.bearing ?? 0);
+  const b = frame.bounds;
   const scale = Math.round((set.sideKm * 1e6) / set.widthMm);
   const inputs = [
     ['reachFormat', 'Reach print format', PRINT_FORMAT],
@@ -645,6 +676,9 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ['shoreRidge', 'Shoreline as a ridge (1) or a groove (0)', set.shoreRidge ? 1 : 0],
     ['bottomLabel', 'Label cut into the underside (1 yes, 0 no)', set.label ? 1 : 0],
     ['cornerMm', 'Corner radius (mm, 0 for square)', set.cornerMm ?? 0],
+    ['shape', 'Shape', set.shape ?? 'square'],
+    ['aspect', 'Rectangle: long side over short side', set.aspect ?? 2],
+    ['bearingDeg', 'Top of the model faces (degrees clockwise from north)', set.bearing ?? 0],
     ['buildings', 'Buildings from OpenStreetMap (1 yes, 0 no)', set.buildings ? 1 : 0],
     ['buildingDefaultM', 'Building height where OSM has none (m)', set.buildingDefaultM ?? DEFAULT_BUILDING_M],
   ];
@@ -700,9 +734,12 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     `      <Data name="${k}"><displayName>${escapeXml(label)}</displayName><value>${escapeXml(v)}</value></Data>`).join('\n');
   const table = (rows) => rows.filter(([k]) => k !== 'reachFormat')
     .map(([, label, v]) => `<tr><td>${escapeXml(label)}</td><td>${escapeXml(v)}</td></tr>`).join('');
-  const description = `<![CDATA[<p>A ${set.sideKm} km square of terrain as a ${set.widthMm} mm model. Open this file in Reach's Print tab to build the same STL.</p>` +
+  const shape = set.shape ?? 'square';
+  const description = `<![CDATA[<p>A ${set.sideKm} km ${shape} of terrain as a ${set.widthMm} mm model. Open this file in Reach's Print tab to build the same STL.</p>` +
     `<table>${table(inputs)}${table(derived)}</table>]]>`;
-  const ring = [[b.west, b.north], [b.east, b.north], [b.east, b.south], [b.west, b.south], [b.west, b.north]];
+  const { ring: outline } = shapeOutline(shape, set.widthMm, { aspect: set.aspect, cornerMm: shape === 'square' ? 0 : set.cornerMm });
+  const ring = [...outline, outline[0]].filter((_, k, all) => all.length < 200 || k % 10 === 0 || k === all.length - 1)
+    .map(([x, y]) => { const p = frame.toLonLat(x, y); return [p.lon, p.lat]; });
   return `<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
@@ -725,6 +762,11 @@ ${data(derived)}
 }
 
 export const PRINT_FORMAT = 'reach-print-1';
+
+const shapeName = (v) => {
+  if (!PRINT_SHAPES.includes(v)) throw new Error(`the file's shape "${v}" is not one Reach prints`);
+  return v;
+};
 
 const unescapeXml = (s) => s.replace(/&(lt|gt|amp|apos|quot);/g, (_, e) => ({ lt: '<', gt: '>', amp: '&', apos: "'", quot: '"' })[e]);
 
@@ -762,6 +804,10 @@ export function parsePrintKml(text) {
       label: values.bottomLabel === '1',
       // files from before rounded corners are square
       cornerMm: values.cornerMm == null ? 0 : num('cornerMm', 0, 100),
+      // files from before shapes are squares with north up
+      shape: values.shape == null ? 'square' : shapeName(values.shape),
+      aspect: values.aspect == null ? 2 : num('aspect', 1, 20),
+      bearing: values.bearingDeg == null ? 0 : num('bearingDeg', -360, 360),
       // files from before buildings have none
       buildings: values.buildings === '1',
       buildingDefaultM: values.buildingDefaultM == null ? DEFAULT_BUILDING_M : num('buildingDefaultM', 1, 100),
@@ -883,8 +929,13 @@ const LABEL_MIN_PX = 0.5;
  */
 export function labelLines(centre, set) {
   const deg = (v, pos, neg) => `${Math.abs(v).toFixed(4)}°${v >= 0 ? pos : neg}`;
-  const lines = [`${deg(centre.lat, 'N', 'S')} ${deg(centre.lon, 'E', 'W')}`, `${set.sideKm} × ${set.sideKm} KM`, `VERTICAL ×${set.exaggeration}`];
+  const shape = set.shape || 'square';
+  const ground = shape === 'square' ? `${set.sideKm} × ${set.sideKm} KM`
+    : shape === 'rectangle' ? `${set.sideKm} × ${+(set.sideKm / set.aspect).toFixed(2)} KM`
+      : `${set.sideKm} KM ${shape.toUpperCase()}`;
+  const lines = [`${deg(centre.lat, 'N', 'S')} ${deg(centre.lon, 'E', 'W')}`, ground, `VERTICAL ×${set.exaggeration}`];
   if (set.seaFloorM > 0 && set.depthStretch !== set.exaggeration) lines.push(`DEPTH ×${set.depthStretch}`);
+  if (set.bearing) lines.push(`TOP FACES ${((set.bearing % 360) + 360) % 360}°`);
   return lines;
 }
 
@@ -928,23 +979,34 @@ export function textInk(lines) {
  * around it, cellMm to a cell, centred on mid; or { why } when the label
  * can't be cut.
  */
-export function bottomLabel(lines, zMm, n, widthMm) {
+export function bottomLabel(lines, zMm, n, widthMm, shape = null) {
   const layouts = [lines, [...lines[0].split(' '), ...lines.slice(1)]];
+  const [mid, midY] = shape ? shape.centre : [widthMm / 2, widthMm / 2];
+  const padOf = (pxMm) => Math.ceil(2 / pxMm); // a millimetre or so of cells
+  // Within a shape, the box and a millimetre round it must clear the outline.
+  const fits = (text, pxMm) => {
+    if (!shape) return true;
+    const pad = padOf(pxMm);
+    const hw = ((text.w + 2 * pad) / 2) * (pxMm / 2) + 1, hh = ((text.h + 2 * pad) / 2) * (pxMm / 2) + 1;
+    const corners = [[mid - hw, midY - hh], [mid + hw, midY - hh], [mid + hw, midY + hh], [mid - hw, midY + hh]];
+    return corners.every((p) => inRing(p, shape.ring)) &&
+      !shape.ring.some(([x, y]) => Math.abs(x - mid) < hw && Math.abs(y - midY) < hh);
+  };
   let best = null;
   for (const l of layouts) {
     const text = textInk(l);
-    const pxMm = Math.min(LABEL_MAX_PX, (widthMm * 0.85) / (text.w / 2), (widthMm * 0.6) / (text.h / 2));
+    let pxMm = Math.min(LABEL_MAX_PX, (widthMm * 0.85) / (text.w / 2), (widthMm * 0.6) / (text.h / 2));
+    while (pxMm >= LABEL_MIN_PX && !fits(text, pxMm)) pxMm *= 0.97;
     if (!best || pxMm > best.pxMm) best = { lines: l, text, pxMm };
   }
   const { text, pxMm } = best;
-  if (pxMm < LABEL_MIN_PX) return { why: `a ${widthMm} mm model is too small for letters that print` };
+  if (pxMm < LABEL_MIN_PX) return { why: `a ${widthMm} mm ${shape ? 'shape' : 'model'} is too small for letters that print` };
   const cellMm = pxMm / 2;
-  const pad = Math.ceil(1 / cellMm);
+  const pad = padOf(pxMm);
   const w = text.w + 2 * pad, h = text.h + 2 * pad;
   const ink = Array.from({ length: h }, (_, r) => Uint8Array.from({ length: w }, (_, c) => text.ink[r - pad]?.[c - pad] || 0));
-  const mid = widthMm / 2;
   // the thinnest model over the label, a grid point either side of it
-  const x0 = mid - (w / 2) * cellMm, x1 = mid + (w / 2) * cellMm, y0 = mid - (h / 2) * cellMm, y1 = mid + (h / 2) * cellMm;
+  const x0 = mid - (w / 2) * cellMm, x1 = mid + (w / 2) * cellMm, y0 = midY - (h / 2) * cellMm, y1 = midY + (h / 2) * cellMm;
   const step = widthMm / (n - 1);
   let low = Infinity;
   for (let i = Math.max(0, Math.floor(x0 / step) - 1); i <= Math.min(n - 1, Math.ceil(x1 / step) + 1); i++) {
@@ -954,7 +1016,7 @@ export function bottomLabel(lines, zMm, n, widthMm) {
   }
   const depthMm = Math.min(LABEL_DEPTH_MM, low - LABEL_ROOF_MM);
   if (depthMm < 0.3) return { why: `the model is only ${low.toFixed(1)} mm thick over it` };
-  return { lines: best.lines, pxMm, depthMm, cellMm, ink, w, h, mid };
+  return { lines: best.lines, pxMm, depthMm, cellMm, ink, w, h, mid, midY };
 }
 
 /**
@@ -965,22 +1027,38 @@ export function bottomLabel(lines, zMm, n, widthMm) {
  * the two meet; the strip between the box and the edge is fanned from the
  * corners. Every point on a straight edge is kept, so every edge is matched.
  */
-function labelledBottom({ ink, w, h, cellMm, depthMm, mid }, perim, n) {
+function labelledBottom(label, perim, n) {
   const tris = [];
-  // grid corner (gx, gy), counted from the label's top left as it reads from underneath: mirrored
-  const P = (gx, gy, z = 0) => [mid + (w / 2 - gx) * cellMm, mid + (h / 2 - gy) * cellMm, z];
-  const sides = [
-    Array.from({ length: w + 1 }, (_, k) => P(w - k, h)), // south, west to east
-    Array.from({ length: h + 1 }, (_, k) => P(0, h - k)), // east, south to north
-    Array.from({ length: w + 1 }, (_, k) => P(k, 0)), // north, east to west
-    Array.from({ length: h + 1 }, (_, k) => P(w, k)), // west, north to south
-  ];
+  const sides = labelSides(label);
   for (let s = 0; s < 4; s++) {
     const edge = Array.from({ length: n }, (_, k) => perim[(s * (n - 1) + k) % perim.length]);
     const box = sides[s];
     for (let k = 0; k < n - 1; k++) tris.push(box[0], edge[k + 1], edge[k]);
     for (let k = 0; k < box.length - 1; k++) tris.push(edge[n - 1], box[k], box[k + 1]);
   }
+  return tris.concat(labelCells(label));
+}
+
+/** A label grid's corner (gx, gy), counted from its top left as it reads from underneath: mirrored. */
+const labelPoint = ({ w, h, cellMm, mid, midY = mid }) => (gx, gy, z = 0) => [mid + (w / 2 - gx) * cellMm, midY + (h / 2 - gy) * cellMm, z];
+
+/** The label box's four sides on the bed, south, east, north, west, counter-clockwise, every grid point kept. */
+function labelSides(label) {
+  const { w, h } = label;
+  const P = labelPoint(label);
+  return [
+    Array.from({ length: w + 1 }, (_, k) => P(w - k, h)), // south, west to east
+    Array.from({ length: h + 1 }, (_, k) => P(0, h - k)), // east, south to north
+    Array.from({ length: w + 1 }, (_, k) => P(k, 0)), // north, east to west
+    Array.from({ length: h + 1 }, (_, k) => P(w, k)), // west, north to south
+  ];
+}
+
+/** The label box's cells as triangles: bed, or the ceilings of the letters' pockets, and the pockets' walls. */
+function labelCells(label) {
+  const { ink, w, h, depthMm } = label;
+  const P = labelPoint(label);
+  const tris = [];
   const wall = (p, q) => { // facing right of p to q, into the pocket
     const p0 = [p[0], p[1], 0], q0 = [q[0], q[1], 0], pd = [p[0], p[1], depthMm], qd = [q[0], q[1], depthMm];
     tris.push(p0, q0, qd, p0, qd, pd);
@@ -1064,6 +1142,11 @@ export function terrainStl(zMm, n, widthMm, extra = [], label = null, cornerMm =
   for (const p of extra) tris.push(p);
   const r = Math.min(cornerMm, widthMm / 2);
   if (r > 0) for (let k = 0; k < tris.length; k++) tris[k] = roundCorner(tris[k], widthMm, r);
+  return writeStl(tris);
+}
+
+/** Triangles (three points each) as a binary STL, each with its normal. */
+export function writeStl(tris) {
   const count = tris.length / 3;
   const buf = new ArrayBuffer(84 + count * 50);
   const view = new DataView(buf);
@@ -1092,6 +1175,309 @@ export function readStl(buf) {
     tris.push({ normal: [f(0), f(1), f(2)], v: [[f(3), f(4), f(5)], [f(6), f(7), f(8)], [f(9), f(10), f(11)]] });
   }
   return tris;
+}
+
+// ---------- print shapes ----------
+
+/** The outlines a print can take. A square keeps the whole grid, and its own mesh (terrainStl). */
+export const PRINT_SHAPES = ['square', 'rectangle', 'circle', 'hexagon', 'triangle', 'star'];
+/** How far out a star's inner corners sit, as a share of its points' reach: fatter than a drawn star, so the points print. */
+const STAR_INNER = 0.5;
+
+/**
+ * Corner v of an outline running counter-clockwise from p to q, rounded to
+ * radius rMm when it turns left (an outward corner), as the points of the
+ * arc. A corner too sharp for the radius gets the largest arc that leaves
+ * half of each side. A corner turning right, or rMm of 0, stays a point.
+ */
+function roundVertex(p, v, q, rMm) {
+  const ax = p[0] - v[0], ay = p[1] - v[1], bx = q[0] - v[0], by = q[1] - v[1];
+  const la = Math.hypot(ax, ay), lb = Math.hypot(bx, by);
+  if (rMm <= 0 || ax * by - ay * bx >= 0) return [v]; // not a left turn
+  const half = Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by) / (la * lb)))) / 2; // half the corner's angle
+  const d = Math.min(rMm / Math.tan(half), la / 2, lb / 2); // from the corner to where the arc meets each side
+  const r = d * Math.tan(half);
+  const ux = ax / la + bx / lb, uy = ay / la + by / lb, ul = Math.hypot(ux, uy);
+  const cx = v[0] + (ux / ul) * (r / Math.sin(half)), cy = v[1] + (uy / ul) * (r / Math.sin(half));
+  const from = Math.atan2(v[1] + (ay / la) * d - cy, v[0] + (ax / la) * d - cx);
+  const sweep = Math.PI - 2 * half;
+  const parts = Math.max(2, Math.ceil(sweep / (Math.PI / 32)));
+  return Array.from({ length: parts + 1 }, (_, s) => {
+    const a = from + (sweep * s) / parts;
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  });
+}
+
+/** A ring without a point repeated next to itself (or the last on the first). */
+function dedupe(ring) {
+  return ring.filter((p, k) => {
+    const q = ring[(k + 1) % ring.length];
+    return Math.abs(p[0] - q[0]) > 1e-9 || Math.abs(p[1] - q[1]) > 1e-9;
+  });
+}
+
+/**
+ * A print's outline in model millimetres, counter-clockwise, centred in the
+ * widthMm square and as wide as it: a rectangle aspect times as wide as it is
+ * tall, a hexagon flat on top and bottom, and a triangle and five-pointed star
+ * pointing up (the star's points reach a circle widthMm across). cornerMm
+ * rounds the outward corners; a circle has none, and a star's inner corners
+ * stay sharp. Returns { ring, pieces, centre }: pieces are convex polygons
+ * that make up the shape, to cut buildings to, and centre is where its label
+ * goes (a triangle's sits a third of the way up).
+ */
+export function shapeOutline(shape, widthMm, { aspect = 2, cornerMm = 0 } = {}) {
+  const c = widthMm / 2;
+  const polar = (k, count, r, start = 0) => {
+    const a = start + (2 * Math.PI * k) / count;
+    return [c + r * Math.cos(a), c + r * Math.sin(a)];
+  };
+  if (shape === 'circle') {
+    const ring = Array.from({ length: 720 }, (_, k) => polar(k, 720, c));
+    return { ring, pieces: [ring], centre: [c, c] };
+  }
+  let corners, centre = [c, c];
+  if (shape === 'rectangle') {
+    const h = widthMm / aspect;
+    corners = [[0, c - h / 2], [widthMm, c - h / 2], [widthMm, c + h / 2], [0, c + h / 2]];
+  } else if (shape === 'hexagon') {
+    corners = Array.from({ length: 6 }, (_, k) => polar(k, 6, c));
+  } else if (shape === 'triangle') {
+    const h = (widthMm * Math.sqrt(3)) / 2, y0 = c - h / 2;
+    corners = [[0, y0], [widthMm, y0], [c, y0 + h]];
+    centre = [c, y0 + h / 3];
+  } else if (shape === 'star') {
+    corners = Array.from({ length: 10 }, (_, k) => polar(k, 10, k % 2 ? c * STAR_INNER : c, Math.PI / 2));
+  } else {
+    corners = [[0, 0], [widthMm, 0], [widthMm, widthMm], [0, widthMm]];
+  }
+  const m = corners.length;
+  const arcs = corners.map((v, k) => roundVertex(corners[(k + m - 1) % m], v, corners[(k + 1) % m], cornerMm));
+  const ring = dedupe(arcs.flat());
+  // A star is five kites, each from the middle out to a point and its two inner corners.
+  const pieces = shape !== 'star' ? [ring]
+    : arcs.flatMap((arc, k) => (k % 2 ? [] : [dedupe([[c, c], ...arcs[(k + m - 1) % m], ...arc, ...arcs[k + 1]])]));
+  return { ring, pieces, centre };
+}
+
+/** A ring with every side split evenly into parts no longer than maxLen. */
+export function densify(ring, maxLen) {
+  const out = [];
+  for (let k = 0; k < ring.length; k++) {
+    const a = ring[k], b = ring[(k + 1) % ring.length];
+    const parts = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / maxLen));
+    for (let s = 0; s < parts; s++) out.push([a[0] + ((b[0] - a[0]) * s) / parts, a[1] + ((b[1] - a[1]) * s) / parts]);
+  }
+  return out;
+}
+
+/**
+ * How a shape's outline lies on an n x n grid widthMm across (row 0 north).
+ * ring is the outline split at every grid step, so the walls follow the
+ * ground. cells marks the grid cells that print whole, (n - 1)² of them row
+ * by row: inside the outline and at least 0.75 of a step clear of it, with no
+ * two meeting only at a corner. used marks the grid points the print reads:
+ * the corners of those cells and of every cell the outline crosses.
+ */
+export function shapeCells(outline, n, widthMm) {
+  const step = widthMm / (n - 1), m = n - 1;
+  const ring = densify(outline, step);
+  const cellOf = (x, y) => [Math.max(0, Math.min(m - 1, Math.floor(x / step))), Math.max(0, Math.min(m - 1, Math.floor(m - y / step)))];
+  // Cells within a cell of a point every half step along the outline are too near it: the outline is at least 0.75 of a step from the rest.
+  const near = new Uint8Array(m * m);
+  for (const [x, y] of densify(ring, step / 2)) {
+    const [ci, cj] = cellOf(x, y);
+    for (let j = Math.max(0, cj - 1); j <= Math.min(m - 1, cj + 1); j++) {
+      for (let i = Math.max(0, ci - 1); i <= Math.min(m - 1, ci + 1); i++) near[j * m + i] = 1;
+    }
+  }
+  // The rest are wholly in or out: test each cell's middle against the outline's crossings of its row.
+  const cells = new Uint8Array(m * m);
+  for (let j = 0; j < m; j++) {
+    const y = (m - j - 0.5) * step;
+    const xs = [];
+    for (let k = 0; k < ring.length; k++) {
+      const a = ring[k], b = ring[(k + 1) % ring.length];
+      if ((a[1] > y) !== (b[1] > y)) xs.push(a[0] + ((y - a[1]) * (b[0] - a[0])) / (b[1] - a[1]));
+    }
+    xs.sort((p, q) => p - q);
+    let crossed = 0;
+    for (let i = 0; i < m; i++) {
+      const x = (i + 0.5) * step;
+      while (crossed < xs.length && xs[crossed] < x) crossed++;
+      if (crossed % 2 && !near[j * m + i]) cells[j * m + i] = 1;
+    }
+  }
+  // Two cells meeting only at a corner would pinch the outline of the whole cells to a point.
+  for (let changed = true; changed;) {
+    changed = false;
+    for (let j = 0; j < m - 1; j++) {
+      for (let i = 0; i < m - 1; i++) {
+        const a = j * m + i, b = a + 1, c = a + m, d = c + 1;
+        if (cells[a] && cells[d] && !cells[b] && !cells[c]) { cells[a] = 0; changed = true; }
+        if (cells[b] && cells[c] && !cells[a] && !cells[d]) { cells[b] = 0; changed = true; }
+      }
+    }
+  }
+  const used = new Uint8Array(n * n);
+  const corners = (i, j) => { used[j * n + i] = used[j * n + i + 1] = used[(j + 1) * n + i] = used[(j + 1) * n + i + 1] = 1; };
+  for (let j = 0; j < m; j++) for (let i = 0; i < m; i++) if (cells[j * m + i]) corners(i, j);
+  for (const [x, y] of ring) corners(...cellOf(x, y));
+  return { ring, cells, used, n, widthMm };
+}
+
+/** Height on an n x n grid of zMm (row 0 north) at model point (x, y), bilinear, clamped to the square. */
+function gridAt(zMm, n, widthMm, x, y) {
+  const step = widthMm / (n - 1);
+  const gi = Math.max(0, Math.min(n - 1, x / step)), gj = Math.max(0, Math.min(n - 1, n - 1 - y / step));
+  const i0 = Math.min(n - 2, Math.floor(gi)), j0 = Math.min(n - 2, Math.floor(gj));
+  const ti = gi - i0, tj = gj - j0, z = (i, j) => zMm[j * n + i];
+  return z(i0, j0) * (1 - ti) * (1 - tj) + z(i0 + 1, j0) * ti * (1 - tj) + z(i0, j0 + 1) * (1 - ti) * tj + z(i0 + 1, j0 + 1) * ti * tj;
+}
+
+/**
+ * Triangles covering a polygon with holes, keeping every point of every ring,
+ * so each edge meets its neighbour's. rings[0] is the outline, the rest holes;
+ * points are [x, y, z] arrays and come back as the same arrays, three to a
+ * triangle, counter-clockwise from above. earcut gets only the rings' corners,
+ * and also drops points in line with a bridge to a hole, so a triangle with
+ * points on its sides is fanned through them again: from its far corner, or,
+ * when more than one side has them, from its middle.
+ */
+function triangulate(rings) {
+  // earcut is given only the corners: the points in line between them come back in the fanning,
+  // and long straight runs in a thin strip can otherwise lead it to overlap triangles.
+  const pts = rings.flat();
+  const flat = [], holes = [], keep = [];
+  let start = 0;
+  for (const [k, r] of rings.entries()) {
+    if (k) holes.push(flat.length / 2);
+    r.forEach((p, q) => {
+      const a = r[(q + r.length - 1) % r.length], b = r[(q + 1) % r.length];
+      const ux = p[0] - a[0], uy = p[1] - a[1], vx = b[0] - p[0], vy = b[1] - p[1];
+      if (Math.abs(ux * vy - uy * vx) > 1e-9 * (ux * ux + uy * uy + vx * vx + vy * vy) || ux * vx + uy * vy < 0) {
+        flat.push(p[0], p[1]);
+        keep.push(start + q);
+      }
+    });
+    // earcut 3.0.1 sizes its point hash from the outline less its first point, so a hole past
+    // that point hashes wrongly; the first point again at the end (dropped as a repeat) fixes it.
+    if (!k) { flat.push(flat[0], flat[1]); keep.push(keep[0]); }
+    start += r.length;
+  }
+  const idx = earcut(flat, holes).map((v) => keep[v]);
+  // The points in buckets, to find the ones on a side quickly.
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [x, y] of pts) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  const B = 64, bw = (x1 - x0) / B || 1, bh = (y1 - y0) / B || 1;
+  const bx = (x) => Math.max(0, Math.min(B - 1, Math.floor((x - x0) / bw))), by = (y) => Math.max(0, Math.min(B - 1, Math.floor((y - y0) / bh)));
+  const buckets = Array.from({ length: B * B }, () => []);
+  pts.forEach(([x, y], k) => buckets[by(y) * B + bx(x)].push(k));
+  // the points lying on the segment from a to b, in order from a
+  const between = (a, b) => {
+    const [ax, ay] = pts[a], dx = pts[b][0] - ax, dy = pts[b][1] - ay, len2 = dx * dx + dy * dy;
+    const on = [];
+    for (let j = by(Math.min(ay, pts[b][1])); j <= by(Math.max(ay, pts[b][1])); j++) {
+      for (let i = bx(Math.min(ax, pts[b][0])); i <= bx(Math.max(ax, pts[b][0])); i++) {
+        for (const k of buckets[j * B + i]) {
+          const px = pts[k][0] - ax, py = pts[k][1] - ay, t = (px * dx + py * dy) / len2;
+          if (t > 1e-9 && t < 1 - 1e-9 && Math.abs(px * dy - py * dx) <= 1e-9 * len2) on.push([t, k]);
+        }
+      }
+    }
+    return on.sort((p, q) => p[0] - q[0]).map(([, k]) => k);
+  };
+  const out = [];
+  for (let t = 0; t < idx.length; t += 3) {
+    let [a, b, c] = [idx[t], idx[t + 1], idx[t + 2]];
+    const ux = pts[b][0] - pts[a][0], uy = pts[b][1] - pts[a][1], vx = pts[c][0] - pts[a][0], vy = pts[c][1] - pts[a][1];
+    const cross = ux * vy - vx * uy;
+    // A flat triangle along three points in a line covers nothing: the triangles beside it take its points in.
+    if (Math.abs(cross) <= 1e-9 * (ux * ux + uy * uy + vx * vx + vy * vy)) continue;
+    if (cross < 0) [b, c] = [c, b];
+    const sides = [[a, b], [b, c], [c, a]].map(([p, q]) => [p, ...between(p, q)]);
+    const lost = sides.filter((s) => s.length > 1).length;
+    if (!lost) { out.push(pts[a], pts[b], pts[c]); continue; }
+    if (lost === 1) {
+      const k = sides.findIndex((s) => s.length > 1);
+      const chain = [...sides[k], [b, c, a][k]], far = pts[[c, a, b][k]];
+      for (let s = 0; s < chain.length - 1; s++) out.push(pts[chain[s]], pts[chain[s + 1]], far);
+      continue;
+    }
+    const loop = sides.flat().map((v) => pts[v]);
+    const middle = [0, 1, 2].map((k) => (pts[a][k] + pts[b][k] + pts[c][k]) / 3);
+    for (let s = 0; s < loop.length; s++) out.push(loop[s], loop[(s + 1) % loop.length], middle);
+  }
+  return out;
+}
+
+/**
+ * The outlines of a set of cells on an n x n grid of points, as rings of
+ * point indices (j * n + i). An outline round cells runs counter-clockwise
+ * (seen with north up), a hole among them clockwise. No two cells may meet
+ * only at a corner.
+ */
+function cellOutlines(cells, n) {
+  const m = n - 1;
+  const inside = (i, j) => i >= 0 && j >= 0 && i < m && j < m && cells[j * m + i];
+  const next = new Map();
+  for (let j = 0; j < m; j++) {
+    for (let i = 0; i < m; i++) {
+      if (!inside(i, j)) continue;
+      const nw = j * n + i, ne = nw + 1, sw = nw + n, se = sw + 1;
+      if (!inside(i, j + 1)) next.set(sw, se);
+      if (!inside(i + 1, j)) next.set(se, ne);
+      if (!inside(i, j - 1)) next.set(ne, nw);
+      if (!inside(i - 1, j)) next.set(nw, sw);
+    }
+  }
+  const loops = [];
+  for (const start of next.keys()) {
+    if (!next.has(start)) continue;
+    const loop = [];
+    for (let k = start; next.has(k);) { loop.push(k); const to = next.get(k); next.delete(k); k = to; }
+    loops.push(loop);
+  }
+  return loops;
+}
+
+/**
+ * A closed solid of a shaped print as triangles (three points each): the
+ * whole cells of the grid (from shapeCells) as in terrainStl, the strip from
+ * them to the outline, walls down round the outline and a flat bottom, with
+ * label (from bottomLabel) cut up into it and extra added at the end.
+ * Returns { tris, top }, top being how many triangles the top surface has:
+ * they come first.
+ */
+export function shapeMesh(zMm, shape, extra = [], label = null) {
+  const { ring, cells, n, widthMm } = shape;
+  const step = widthMm / (n - 1), m = n - 1;
+  const point = (k) => { const i = k % n, j = (k - i) / n; return [i * step, (m - j) * step, zMm[k]]; };
+  const tris = [];
+  for (let j = 0; j < m; j++) {
+    for (let i = 0; i < m; i++) {
+      if (!cells[j * m + i]) continue;
+      const a = point(j * n + i), b = point(j * n + i + 1), c = point((j + 1) * n + i), d = point((j + 1) * n + i + 1);
+      tris.push(a, c, b, b, c, d);
+    }
+  }
+  const edge = ring.map(([x, y]) => [x, y, gridAt(zMm, n, widthMm, x, y)]);
+  const loops = cellOutlines(cells, n).map((l) => l.map(point));
+  const islands = loops.filter((l) => ringArea2(l) > 0);
+  for (const p of triangulate([edge, ...islands])) tris.push(p);
+  for (const hole of loops.filter((l) => ringArea2(l) < 0)) for (const p of triangulate([hole])) tris.push(p);
+  const top = tris.length / 3;
+  for (let k = 0; k < edge.length; k++) {
+    const t0 = edge[k], t1 = edge[(k + 1) % edge.length];
+    const b0 = [t0[0], t0[1], 0], b1 = [t1[0], t1[1], 0];
+    tris.push(b0, b1, t1, b0, t1, t0); // wall, facing outward
+  }
+  const bed = ring.map(([x, y]) => [x, y, 0]);
+  const bottom = triangulate(label ? [bed, labelSides(label).flatMap((s) => s.slice(0, -1))] : [bed]);
+  for (let t = 0; t < bottom.length; t += 3) tris.push(bottom[t], bottom[t + 2], bottom[t + 1]); // facing down
+  if (label) for (const p of labelCells(label)) tris.push(p);
+  for (const p of extra) tris.push(p);
+  return { tris, top };
 }
 
 // ---------- buildings ----------
@@ -1217,6 +1603,36 @@ export function clipToSquare(ring, w) {
   return out.length >= 3 ? out : null;
 }
 
+/** A ring cut to a convex polygon running counter-clockwise (Sutherland-Hodgman), without repeated points. */
+export function clipToConvex(ring, clip) {
+  let pts = ring;
+  for (let k = 0; k < clip.length && pts.length; k++) {
+    const a = clip[k], b = clip[(k + 1) % clip.length];
+    const side = (p) => (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]); // 0 or more on the inside
+    const out = [];
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i], q = pts[(i + 1) % pts.length], sp = side(p), sq = side(q);
+      if (sp >= 0) out.push(p);
+      if ((sp >= 0) !== (sq >= 0)) {
+        const t = sp / (sp - sq);
+        out.push([p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])]);
+      }
+    }
+    pts = out;
+  }
+  const out = pts.filter((p, i) => {
+    const q = pts[(i + 1) % pts.length];
+    return Math.abs(p[0] - q[0]) > 1e-6 || Math.abs(p[1] - q[1]) > 1e-6;
+  });
+  return out.length >= 3 ? out : null;
+}
+
+/** Whether point p is strictly inside a convex polygon running counter-clockwise. */
+const inConvex = (p, clip) => clip.every((a, k) => {
+  const b = clip[(k + 1) % clip.length];
+  return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) > 1e-9;
+});
+
 const NOT_BUILT = new Set(['no', 'roof', 'construction', 'proposed', 'demolished', 'destroyed']);
 
 /**
@@ -1225,10 +1641,15 @@ const NOT_BUILT = new Set(['no', 'roof', 'construction', 'proposed', 'demolished
  * { rings, heightM }: the outline counter-clockwise, then any courtyards
  * clockwise, with heightM null where OSM has no height. Roofs on posts,
  * underground buildings and footprints too small to print are left out.
+ * frame (from printFrame) places a turned print; pieces (from shapeOutline)
+ * cut them to a shape instead, a footprint across two pieces in two parts.
  */
-export function buildingFootprints(osm, bounds, widthMm) {
-  const toMm = (g) => [((g.lon - bounds.west) / (bounds.east - bounds.west)) * widthMm,
+export function buildingFootprints(osm, bounds, widthMm, { frame = null, pieces = null } = {}) {
+  const toMm = frame ? (g) => frame.toMm(g.lon, g.lat) : (g) => [((g.lon - bounds.west) / (bounds.east - bounds.west)) * widthMm,
     ((g.lat - bounds.south) / (bounds.north - bounds.south)) * widthMm];
+  const square = [[0, 0], [widthMm, 0], [widthMm, widthMm], [0, widthMm]];
+  const cuts = pieces ? pieces.map((piece) => ({ clip: (r) => clipToConvex(r, piece), within: (p) => inConvex(p, piece) }))
+    : [{ clip: (r) => clipToSquare(r, widthMm), within: (p) => inConvex(p, square) }];
   const open = (ring) => ring.slice(0, -1); // drop the repeated closing point
   const out = [];
   for (const el of osm.elements || []) {
@@ -1247,15 +1668,17 @@ export function buildingFootprints(osm, bounds, widthMm) {
     }
     const heightM = buildingHeight(tags);
     for (const outer of outers) {
-      const shell = clipToSquare(outer, widthMm);
-      if (!shell) continue;
-      // A courtyard the square's edge cuts would touch the cut outline, so it is filled in instead.
-      const holes = inners.filter((h) => inRing(h[0], outer) && h.every(([x, y]) => x > 0 && x < widthMm && y > 0 && y < widthMm));
-      const area = Math.abs(ringArea2(shell)) / 2 - holes.reduce((s, h) => s + Math.abs(ringArea2(h)) / 2, 0);
-      if (area < MIN_FOOTPRINT_MM2) continue;
-      if (ringArea2(shell) < 0) shell.reverse();
-      for (const h of holes) if (ringArea2(h) > 0) h.reverse();
-      out.push({ rings: [shell, ...holes], heightM });
+      for (const { clip, within } of cuts) {
+        const shell = clip(outer);
+        if (!shell) continue;
+        // A courtyard the edge cuts would touch the cut outline, so it is filled in instead.
+        const holes = inners.filter((h) => inRing(h[0], outer) && h.every((p) => within(p))).map((h) => h.slice());
+        const area = Math.abs(ringArea2(shell)) / 2 - holes.reduce((s, h) => s + Math.abs(ringArea2(h)) / 2, 0);
+        if (area < MIN_FOOTPRINT_MM2) continue;
+        if (ringArea2(shell) < 0) shell.reverse();
+        for (const h of holes) if (ringArea2(h) > 0) h.reverse();
+        out.push({ rings: [shell, ...holes], heightM });
+      }
     }
   }
   return out;

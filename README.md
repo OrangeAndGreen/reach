@@ -11,19 +11,22 @@ Three tools on one map:
   with a graph of how far, and how much ground, each extra hour buys. **Find
   the high ground** then reads the tallest point inside each band. **Download
   KML** saves the bands and their placemarks for Google Earth.
-- **Print**: a square of real terrain (0.5 to 160 km across) as a closed binary
-  STL for the slicer. On squares of 2 km or less it can raise the buildings
-  from OpenStreetMap too. Choose the model width, the detail, a height stretch and
+- **Print**: a piece of real terrain (100 m to 500 km across) as a closed binary
+  STL for the slicer. It can be a square, a rectangle (3:2 to 5:1), a circle, a
+  hexagon, a triangle or a five-pointed star, turned up to 90° either way so its
+  top faces any bearing: a 4 km by 0.8 km rectangle turned to 29° lines up with
+  Central Park. On prints of 2 km or less across it can raise the buildings
+  from OpenStreetMap too. Choose the model width (the shape's width across), the detail, a height stretch and
   the base thickness, and whether the sea floor comes too (down to 50 m, 200 m,
   1,000 m or all the way, with its own depth stretch), and whether to mark the
-  shoreline with a groove or a ridge (0.4 or 0.8 mm) to paint or just to see the coast by. It can also cut a label 0.6 mm up into the underside, mirrored so it reads when you turn the print over: the centre's coordinates, the ground covered and the height stretch (and the depth stretch, when the sea floor has its own). The corners are rounded, 5 mm by default (or 10 mm, or square), so a wide slab is slower to lift off the bed. A preview you can turn shows the model, beside its real
+  shoreline with a groove or a ridge (0.4 or 0.8 mm) to paint or just to see the coast by. It can also cut a label 0.6 mm up into the underside, mirrored so it reads when you turn the print over: the centre's coordinates, the ground covered and the height stretch (and the depth stretch, when the sea floor has its own). The corners are rounded, 5 mm by default (or 10 mm, or square), so a wide slab is slower to lift off the bed: a square's ground is squeezed into the curve, another shape's is cut off along it, and a star rounds only its points. A preview you can turn shows the model, beside its real
   dimensions and scale. The default is the 20 km around Mt Washington:
-  120 × 120 × 17.6 mm at ×1.5. **Download KML** saves the square for Google
-  Earth along with every setting (centre, size, width, detail, stretch, base, sea floor, shoreline, label, corners)
+  120 × 120 × 17.6 mm at ×1.5. **Download KML** saves the outline for Google
+  Earth along with every setting (centre, size, width, detail, stretch, base, sea floor, shoreline, label, corners, shape, turn)
   and what came of them (tile zoom, metres per pixel, lowest and highest point,
   model height, scale, triangle count, STL file name). **Open KML** reads one
   back and builds the same STL again. **Download map image** saves the map
-  layer on show (Terrain or Streets) cropped to the square, as a PNG of up to
+  layer on show (Terrain or Streets) cropped to the print (turned to match, and clear outside its shape), as a PNG of up to
   2,048 px with the map's credit in the corner.
 
 All three started as ideas parked in ViggiPy's `TODO.txt`: the

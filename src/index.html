@@ -141,10 +141,10 @@
       <p class="hint">Road times come from the public OSRM demo server, so a run goes in polite batches. Times are free-flow driving with no traffic or stops.</p>
     </div>
 
-    <!-- Print: a square of terrain as a solid STL for the 3D printer -->
+    <!-- Print: a piece of terrain as a solid STL for the 3D printer -->
     <div id="pane-print" class="pane" hidden>
       <h1>Print a piece of the planet</h1>
-      <p class="lede">A square of real terrain as a closed STL, ready for the slicer. Pick the middle on the map, choose its size, and stretch the heights if the land is flat.</p>
+      <p class="lede">A piece of real terrain as a closed STL, ready for the slicer. Pick the middle on the map, choose its shape and size, turn it to line up with the ground, and stretch the heights if the land is flat.</p>
 
       <div class="field">
         <label for="print-search">Centre</label>
@@ -157,7 +157,7 @@
 
       <div class="row">
         <div class="field">
-          <label for="print-side">Square</label>
+          <label for="print-side">Size across</label>
           <select id="print-side">
             <option value="0.1">100 m</option>
             <option value="0.25">250 m</option>
@@ -190,6 +190,33 @@
             <option value="200" selected>200 × 200</option>
             <option value="300">300 × 300</option>
           </select>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="print-shape">Shape</label>
+          <select id="print-shape">
+            <option value="square" selected>Square</option>
+            <option value="rectangle">Rectangle</option>
+            <option value="circle">Circle</option>
+            <option value="hexagon">Hexagon</option>
+            <option value="triangle">Triangle</option>
+            <option value="star">Star</option>
+          </select>
+        </div>
+        <div id="print-aspect-field" class="field" hidden>
+          <label for="print-aspect">Sides</label>
+          <select id="print-aspect">
+            <option value="1.5">3 : 2</option>
+            <option value="2" selected>2 : 1</option>
+            <option value="3">3 : 1</option>
+            <option value="4">4 : 1</option>
+            <option value="5">5 : 1</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="print-turn">Turn <span id="print-turn-value"></span></label>
+          <input id="print-turn" type="range" min="-90" max="90" step="1" value="0">
         </div>
       </div>
       <div class="row">
@@ -238,7 +265,7 @@
             <option value="on">Centre, area, stretch</option>
           </select>
         </div>
-        <div class="field">
+        <div id="print-corner-field" class="field">
           <label for="print-corner">Corners</label>
           <select id="print-corner">
             <option value="0">Square</option>
@@ -286,7 +313,7 @@
         <button id="print-open">Open KML</button>
         <input id="print-file" type="file" accept=".kml,application/vnd.google-earth.kml+xml" hidden>
       </div>
-      <p class="hint">The KML holds the square for Google Earth and every setting above. Open it here later to build the same STL again.</p>
+      <p class="hint">The KML holds the outline for Google Earth and every setting above. Open it here later to build the same STL again.</p>
     </div>
   </section>
 
