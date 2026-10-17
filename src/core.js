@@ -644,6 +644,7 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ['shoreMm', 'Shoreline line size (mm, 0 for none)', set.shoreMm ?? 0],
     ['shoreRidge', 'Shoreline as a ridge (1) or a groove (0)', set.shoreRidge ? 1 : 0],
     ['bottomLabel', 'Label cut into the underside (1 yes, 0 no)', set.label ? 1 : 0],
+    ['cornerMm', 'Corner radius (mm, 0 for square)', set.cornerMm ?? 0],
     ['buildings', 'Buildings from OpenStreetMap (1 yes, 0 no)', set.buildings ? 1 : 0],
     ['buildingDefaultM', 'Building height where OSM has none (m)', set.buildingDefaultM ?? DEFAULT_BUILDING_M],
   ];
@@ -759,6 +760,8 @@ export function parsePrintKml(text) {
       shoreRidge: values.shoreRidge === '1',
       // files from before the label have none
       label: values.bottomLabel === '1',
+      // files from before rounded corners are square
+      cornerMm: values.cornerMm == null ? 0 : num('cornerMm', 0, 100),
       // files from before buildings have none
       buildings: values.buildings === '1',
       buildingDefaultM: values.buildingDefaultM == null ? DEFAULT_BUILDING_M : num('buildingDefaultM', 1, 100),
@@ -998,14 +1001,34 @@ function labelledBottom({ ink, w, h, cellMm, depthMm, mid }, perim, n) {
 }
 
 /**
+ * A point of a widthMm square print moved so the square's corners are rounded
+ * to radius rMm. Only the rMm x rMm box at each corner moves: each point there
+ * slides toward the arc's centre, along its ray, so the box's square outline
+ * lands on the arc and its inner sides stay put. One smooth map for every
+ * point, so a closed mesh stays closed, walls stay upright, and the ground
+ * within a corner is squeezed by at most 0.41 rMm.
+ */
+export function roundCorner(p, widthMm, rMm) {
+  const cx = p[0] < rMm ? rMm : p[0] > widthMm - rMm ? widthMm - rMm : null;
+  const cy = p[1] < rMm ? rMm : p[1] > widthMm - rMm ? widthMm - rMm : null;
+  if (cx == null || cy == null) return p;
+  const dx = p[0] - cx, dy = p[1] - cy;
+  const len = Math.hypot(dx, dy);
+  if (!len) return p;
+  const k = Math.max(Math.abs(dx), Math.abs(dy)) / len;
+  return [cx + dx * k, cy + dy * k, p[2]];
+}
+
+/**
  * A closed, printable binary STL of an n x n height grid (row 0 north): the
  * terrain on top, four walls down to z = 0, and a bottom fanned from its centre.
  * Every edge is shared by exactly two triangles, so slicers take it as solid.
  * extra is more triangles (three points each) to write after the terrain's,
  * such as buildingTriangles. label (from bottomLabel) cuts its letters up
- * into the bottom.
+ * into the bottom. cornerMm rounds the corners (roundCorner), so they are
+ * slower to lift off the bed.
  */
-export function terrainStl(zMm, n, widthMm, extra = [], label = null) {
+export function terrainStl(zMm, n, widthMm, extra = [], label = null, cornerMm = 0) {
   const step = widthMm / (n - 1);
   const X = (i) => i * step;
   const Y = (j) => (n - 1 - j) * step; // north is +y
@@ -1039,6 +1062,8 @@ export function terrainStl(zMm, n, widthMm, extra = [], label = null) {
   }
   if (label) for (const p of labelledBottom(label, ring.map(([i, j]) => [X(i), Y(j), 0]), n)) tris.push(p);
   for (const p of extra) tris.push(p);
+  const r = Math.min(cornerMm, widthMm / 2);
+  if (r > 0) for (let k = 0; k < tris.length; k++) tris[k] = roundCorner(tris[k], widthMm, r);
   const count = tris.length / 3;
   const buf = new ArrayBuffer(84 + count * 50);
   const view = new DataView(buf);
