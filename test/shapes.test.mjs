@@ -133,7 +133,7 @@ test('a labelled shape is still closed, its label inside the outline', () => {
 
 test('the label names the shape and the turn', () => {
   const centre = { lat: 40.7812, lon: -73.9665 };
-  const set = { sideKm: 4, exaggeration: 3, seaFloorM: 0, depthStretch: 3 };
+  const set = { sideKm: 4, exaggeration: 3, seaFloorM: 0, depthStretch: 3, label: true };
   assert.deepEqual(core.labelLines(centre, { ...set, shape: 'rectangle', aspect: 5, bearing: 29 }).slice(1), ['4 × 0.8 KM', 'VERTICAL ×3', 'TOP FACES 29°']);
   assert.equal(core.labelLines(centre, { ...set, shape: 'circle' })[1], '4 KM CIRCLE');
   assert.equal(core.labelLines(centre, { ...set, bearing: -29 }).at(-1), 'TOP FACES 331°');

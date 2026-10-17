@@ -675,6 +675,7 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ['shoreMm', 'Shoreline line size (mm, 0 for none)', set.shoreMm ?? 0],
     ['shoreRidge', 'Shoreline as a ridge (1) or a groove (0)', set.shoreRidge ? 1 : 0],
     ['bottomLabel', 'Label cut into the underside (1 yes, 0 no)', set.label ? 1 : 0],
+    ['bottomText', 'Own text cut into the underside, a line a line', set.labelText ?? ''],
     ['cornerMm', 'Corner radius (mm, 0 for square)', set.cornerMm ?? 0],
     ['shape', 'Shape', set.shape ?? 'square'],
     ['aspect', 'Rectangle: long side over short side', set.aspect ?? 2],
@@ -802,6 +803,8 @@ export function parsePrintKml(text) {
       shoreRidge: values.shoreRidge === '1',
       // files from before the label have none
       label: values.bottomLabel === '1',
+      // files from before their own text have none
+      labelText: values.bottomText ?? '',
       // files from before rounded corners are square
       cornerMm: values.cornerMm == null ? 0 : num('cornerMm', 0, 100),
       // files from before shapes are squares with north up
@@ -878,6 +881,17 @@ const FONT = {
   ':': ['..', '##', '##', '..', '##', '##', '..'],
   '°': ['###', '#.#', '###', '...', '...', '...', '...'],
   '×': ['.....', '#...#', '.#.#.', '..#..', '.#.#.', '#...#', '.....'],
+  ',': ['..', '..', '..', '..', '##', '.#', '#.'],
+  "'": ['#', '#', '.', '.', '.', '.', '.'],
+  '’': ['#', '#', '.', '.', '.', '.', '.'],
+  '!': ['#', '#', '#', '#', '#', '.', '#'],
+  '?': ['.###.', '#...#', '....#', '...#.', '..#..', '.....', '..#..'],
+  '&': ['.##..', '#..#.', '#.#..', '.#...', '#.#.#', '#..#.', '.##.#'],
+  '/': ['....#', '....#', '...#.', '..#..', '.#...', '#....', '#....'],
+  '(': ['.#', '#.', '#.', '#.', '#.', '#.', '.#'],
+  ')': ['#.', '.#', '.#', '.#', '.#', '.#', '#.'],
+  '+': ['.....', '..#..', '..#..', '#####', '..#..', '..#..', '.....'],
+  '#': ['.#.#.', '.#.#.', '#####', '.#.#.', '#####', '.#.#.', '.#.#.'],
   0: ['.###.', '#...#', '#..##', '#.#.#', '##..#', '#...#', '.###.'],
   1: ['..#..', '.##..', '..#..', '..#..', '..#..', '..#..', '.###.'],
   2: ['.###.', '#...#', '....#', '...#.', '..#..', '.#...', '#####'],
@@ -923,11 +937,31 @@ export const LABEL_ROOF_MM = 0.6;
 const LABEL_MAX_PX = 1;
 const LABEL_MIN_PX = 0.5;
 
+/** How much of their own text a label takes: lines, and characters a line. */
+export const LABEL_TEXT_LINES = 3;
+export const LABEL_TEXT_CHARS = 30;
+
+/** Text typed for a label as its lines: upper case, blank lines dropped, cut to LABEL_TEXT_LINES of LABEL_TEXT_CHARS. */
+export function customLines(text = '') {
+  return text.split(/\r?\n/).map((l) => l.trim().replace(/\s+/g, ' ').toUpperCase().slice(0, LABEL_TEXT_CHARS))
+    .filter(Boolean).slice(0, LABEL_TEXT_LINES);
+}
+
+/** The characters in text the label's font doesn't have, once each: they print as spaces. */
+export function unprintable(text = '') {
+  return [...new Set([...text.toUpperCase()].filter((ch) => !FONT[ch] && !/\s/.test(ch)))];
+}
+
 /**
- * What the label under a print says: the centre, the ground covered, and the
- * height stretch, with the depth stretch when the sea floor has its own.
+ * What the label under a print says: with set.label, the centre, the ground
+ * covered, and the height stretch, with the depth stretch when the sea floor
+ * has its own; then set.labelText's lines (customLines) under them.
  */
 export function labelLines(centre, set) {
+  return [...(set.label ? infoLines(centre, set) : []), ...customLines(set.labelText)];
+}
+
+function infoLines(centre, set) {
   const deg = (v, pos, neg) => `${Math.abs(v).toFixed(4)}°${v >= 0 ? pos : neg}`;
   const shape = set.shape || 'square';
   const ground = shape === 'square' ? `${set.sideKm} × ${set.sideKm} KM`
@@ -1027,13 +1061,14 @@ export function labelInk(lines, north = null) {
  * lines in the font, as large as fits (the coordinates go on two lines when
  * that makes them larger), centred and mirrored so they read when the print
  * is turned over, the model's top still at the top. With north (the bearing
- * the top faces), an arrow above them points north. Returns { lines, pxMm,
+ * the top faces), an arrow above them points north. wrapFirst false keeps
+ * the first line whole, for text typed as it should read. Returns { lines, pxMm,
  * depthMm, cellMm, ink, w, h, mid, midY }: the ink grid with a millimetre or
  * so of bare bed around it, cellMm to a cell, centred on mid, midY; or { why }
  * when the label can't be cut.
  */
-export function bottomLabel(lines, zMm, n, widthMm, shape = null, north = null) {
-  const layouts = [lines, [...lines[0].split(' '), ...lines.slice(1)]];
+export function bottomLabel(lines, zMm, n, widthMm, shape = null, north = null, wrapFirst = true) {
+  const layouts = wrapFirst ? [lines, [...lines[0].split(' '), ...lines.slice(1)]] : [lines];
   const [mid, midY] = shape ? shape.centre : [widthMm / 2, widthMm / 2];
   const padOf = (pxMm) => Math.ceil(2 / pxMm); // a millimetre or so of cells
   // Within a shape, the box and a millimetre round it must clear the outline.
