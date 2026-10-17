@@ -854,7 +854,7 @@ async function buildModel() {
     if (shore) scaled.mm = core.markShore(scaled.mm, shore, set.shoreMm, set.shoreRidge);
     const extra = placed ? core.buildingTriangles(placed.buildings, scaled.mm, n, { ...set, ...scaled }) : [];
     if (buildings) buildings.triangles = extra.length / 3;
-    const label = set.label ? core.bottomLabel(core.labelLines(centre, set), scaled.mm, n, set.widthMm, outline) : null;
+    const label = set.label ? core.bottomLabel(core.labelLines(centre, set), scaled.mm, n, set.widthMm, outline, set.bearing) : null;
     const cutLabel = label?.why ? null : label;
     let stl, top = 2 * (n - 1) ** 2;
     if (cut) {
@@ -1076,7 +1076,7 @@ function shoreText({ set, shore }) {
 
 function labelText(label) {
   if (label.why) return `None: ${label.why}`;
-  return `${label.lines.map(escapeHtml).join(' / ')}, letters ${(label.pxMm * 7).toFixed(1)} mm tall, ${label.depthMm.toFixed(1)} mm deep`;
+  return `${label.lines.map(escapeHtml).join(' / ')} under a north arrow, letters ${(label.pxMm * 7).toFixed(1)} mm tall, ${label.depthMm.toFixed(1)} mm deep`;
 }
 
 function buildingsText({ buildings: b, set }) {

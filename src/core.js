@@ -970,16 +970,69 @@ export function textInk(lines) {
   return { ink, w, h };
 }
 
+/** How big the north arrow is, in font pixels: about two lines of text. */
+const ARROW_PX = 14;
+
+/**
+ * An arrow on an ink grid size cells square (row 0 at the top), pointing deg
+ * degrees clockwise from up: a shaft and a head. Cells meeting only at a
+ * corner are bridged with a third, as the font's are.
+ */
+export function arrowInk(deg, size) {
+  const dx = Math.sin(deg * RAD), dy = -Math.cos(deg * RAD), c = size / 2;
+  const ink = Array.from({ length: size }, (_, r) => Uint8Array.from({ length: size }, (_, col) => {
+    const px = col + 0.5 - c, py = r + 0.5 - c;
+    const along = (px * dx + py * dy) / size, across = Math.abs(px * dy - py * dx) / size;
+    const shaft = along >= -0.46 && along <= 0.12 && across <= 0.075;
+    const head = along >= 0.08 && along <= 0.48 && across <= 0.27 * ((0.48 - along) / 0.4);
+    return shaft || head ? 1 : 0;
+  }));
+  for (let changed = true; changed;) {
+    changed = false;
+    for (let r = 0; r < size - 1; r++) {
+      for (let col = 0; col < size - 1; col++) {
+        const a = ink[r][col], b = ink[r][col + 1], d = ink[r + 1][col], e = ink[r + 1][col + 1];
+        if ((a && e && !b && !d) || (b && d && !a && !e)) { ink[r][a ? col + 1 : col] = 1; changed = true; }
+      }
+    }
+  }
+  return ink;
+}
+
+/**
+ * The label's ink: its lines (textInk), and with north given, an arrow
+ * pointing north and an N above them. north is the bearing the print's top
+ * faces; the ink reads as the label does from underneath, so the arrow leans
+ * north degrees clockwise.
+ */
+export function labelInk(lines, north = null) {
+  const text = textInk(lines);
+  if (north == null) return text;
+  const size = ARROW_PX * 2, gap = 8;
+  const arrow = arrowInk(north, size);
+  const letter = textInk(['N']);
+  const topW = size + gap + letter.w;
+  const w = Math.max(text.w, topW), h = size + gap + text.h;
+  const ink = Array.from({ length: h }, () => new Uint8Array(w));
+  const ax = Math.floor((w - topW) / 2), tx = Math.floor((w - text.w) / 2);
+  arrow.forEach((row, r) => row.forEach((v, col) => { if (v) ink[r][ax + col] = 1; }));
+  const ly = Math.floor((size - letter.h) / 2);
+  letter.ink.forEach((row, r) => row.forEach((v, col) => { if (v) ink[ly + r][ax + size + gap + col] = 1; }));
+  text.ink.forEach((row, r) => row.forEach((v, col) => { if (v) ink[size + gap + r][tx + col] = 1; }));
+  return { ink, w, h };
+}
+
 /**
  * The label to cut into the underside of an n x n print widthMm across: the
  * lines in the font, as large as fits (the coordinates go on two lines when
  * that makes them larger), centred and mirrored so they read when the print
- * is turned over, north still at the top. Returns { lines, pxMm, depthMm,
- * cellMm, ink, w, h, mid }: the ink grid with a millimetre or so of bare bed
- * around it, cellMm to a cell, centred on mid; or { why } when the label
- * can't be cut.
+ * is turned over, the model's top still at the top. With north (the bearing
+ * the top faces), an arrow above them points north. Returns { lines, pxMm,
+ * depthMm, cellMm, ink, w, h, mid, midY }: the ink grid with a millimetre or
+ * so of bare bed around it, cellMm to a cell, centred on mid, midY; or { why }
+ * when the label can't be cut.
  */
-export function bottomLabel(lines, zMm, n, widthMm, shape = null) {
+export function bottomLabel(lines, zMm, n, widthMm, shape = null, north = null) {
   const layouts = [lines, [...lines[0].split(' '), ...lines.slice(1)]];
   const [mid, midY] = shape ? shape.centre : [widthMm / 2, widthMm / 2];
   const padOf = (pxMm) => Math.ceil(2 / pxMm); // a millimetre or so of cells
@@ -994,7 +1047,7 @@ export function bottomLabel(lines, zMm, n, widthMm, shape = null) {
   };
   let best = null;
   for (const l of layouts) {
-    const text = textInk(l);
+    const text = labelInk(l, north);
     let pxMm = Math.min(LABEL_MAX_PX, (widthMm * 0.85) / (text.w / 2), (widthMm * 0.6) / (text.h / 2));
     while (pxMm >= LABEL_MIN_PX && !fits(text, pxMm)) pxMm *= 0.97;
     if (!best || pxMm > best.pxMm) best = { lines: l, text, pxMm };

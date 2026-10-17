@@ -171,3 +171,65 @@ test('a print KML keeps the shape and the turn, and older files are squares, nor
   assert.equal(core.parsePrintKml(old).set.bearing, 0);
   assert.throws(() => core.parsePrintKml(kml.replace('<value>star</value>', '<value>blob</value>')), /shape "blob"/);
 });
+
+/** Where an ink grid's inked cells sit on average, as [column, row]. */
+const inkMiddle = (ink, rows = ink.length) => {
+  let sc = 0, sr = 0, count = 0;
+  for (let r = 0; r < rows; r++) ink[r].forEach((v, c) => { if (v) { sc += c + 0.5; sr += r + 0.5; count++; } });
+  return [sc / count, sr / count];
+};
+
+test('the north arrow points the way it is asked, with no cells meeting only at a corner', () => {
+  const size = 28;
+  for (const deg of [0, 29, 45, 90, -60, 180]) {
+    const ink = core.arrowInk(deg, size);
+    // the head is the heavy end, so the ink leans toward the tip
+    const [c, r] = inkMiddle(ink);
+    const lean = Math.atan2(c - size / 2, size / 2 - r) * 180 / Math.PI;
+    near(((lean - deg + 540) % 360) - 180, 0, 12);
+    for (let y = 0; y < size - 1; y++) {
+      for (let x = 0; x < size - 1; x++) {
+        const [a, b, d, e] = [ink[y][x], ink[y][x + 1], ink[y + 1][x], ink[y + 1][x + 1]];
+        assert.ok(!((a && e && !b && !d) || (b && d && !a && !e)), `${deg}°: a pinch at ${x}, ${y}`);
+      }
+    }
+  }
+});
+
+test('on the print the arrow points north: up on a north-up print, west of the top when it faces east', () => {
+  const n = 61, w = 120;
+  const zMm = new Array(n * n).fill(3);
+  const lines = ['44.2706°N 71.3033°W', '20 × 20 KM', 'VERTICAL ×1.5'];
+  // the arrow's lean in model mm, from above: the average of its cells against its box's middle
+  const lean = (north) => {
+    const lab = core.bottomLabel(lines, zMm, n, w, null, north);
+    const ink = core.labelInk(lab.lines, north);
+    const pad = (lab.w - ink.w) / 2;
+    // the arrow's box: centred across with the N beside it, at the top
+    const left = pad + Math.floor((ink.w - (28 + 8 + core.textInk(['N']).w)) / 2), top = pad;
+    const box = lab.ink.slice(top, top + 28).map((row) => row.slice(left, left + 28));
+    const [c, r] = inkMiddle(box);
+    // label cell column c lies at x = mid + (w/2 - c) cellMm: mirrored across, the right way up
+    return [-(c - 14) * lab.cellMm, -(r - 14) * lab.cellMm];
+  };
+  const [x0, y0] = lean(0);
+  assert.ok(y0 > 0.3 && Math.abs(x0) < 0.2, `north-up arrow leans ${x0}, ${y0}`);
+  const [x90, y90] = lean(90);
+  assert.ok(x90 < -0.3 && Math.abs(y90) < 0.2, `east-facing arrow leans ${x90}, ${y90}`);
+});
+
+test('a label with its north arrow still closes, square or shaped', () => {
+  const n = 61, w = 120;
+  const zMm = new Array(n * n).fill(3);
+  const lines = ['40.7812°N 73.9665°W', '4 × 0.8 KM', 'VERTICAL ×3', 'TOP FACES 29°'];
+  const square = core.bottomLabel(lines, zMm, n, w, null, 29);
+  assert.ok(!square.why);
+  const tris = core.readStl(core.terrainStl(zMm, n, w, [], square, 5)).map((t) => t.v);
+  assert.ok(core.isClosed(tris.flat().map((p) => p.map((v) => +v.toFixed(4)))));
+  for (const shape of ['circle', 'hexagon', 'triangle', 'star', 'rectangle']) {
+    const outline = core.shapeOutline(shape, w, { aspect: 2, cornerMm: 5 });
+    const lab = core.bottomLabel(lines, zMm, n, w, outline, 29);
+    assert.ok(!lab.why, `${shape}: ${lab.why}`);
+    assert.ok(core.isClosed(core.shapeMesh(zMm, core.shapeCells(outline.ring, n, w), [], lab).tris), `${shape} with an arrow is open`);
+  }
+});
