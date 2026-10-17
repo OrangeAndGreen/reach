@@ -99,7 +99,7 @@ h1 { font: 600 26px/1.15 var(--f-display); letter-spacing: 0.01em; margin: 0; te
 .field label, figcaption {
   font: 600 13px/1.2 var(--f-display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2);
 }
-input, select {
+input, select, textarea {
   background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 7px 9px; min-width: 0;
 }
 .row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }

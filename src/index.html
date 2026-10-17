@@ -263,6 +263,8 @@
           <select id="print-label">
             <option value="none" selected>None</option>
             <option value="on">Centre, area, stretch</option>
+            <option value="text">Your own text</option>
+            <option value="both">Both</option>
           </select>
         </div>
         <div id="print-corner-field" class="field">
@@ -294,7 +296,11 @@
       </div>
       <p id="print-sea-hint" class="hint" hidden>The sea floor comes from coarser tiles than the land (75 to 150 m per pixel, by latitude), so it prints softer. Lakes print as their flat surface.</p>
       <p id="print-shore-hint" class="hint" hidden>The line runs along the land's edge, one grid point wide, so a finer detail draws a finer line. It follows the coast, not lakeshores, which the tiles hold as flat land.</p>
-      <p id="print-label-hint" class="hint" hidden>The centre, the ground covered and the height stretch, under an arrow pointing north, cut 0.6 mm up into the underside and mirrored, so it reads when the print is turned over. Print it flat side down as usual: each letter is a short bridge. Turn the preview over to see it.</p>
+      <div id="print-text-field" class="field" hidden>
+        <label for="print-text">Your text</label>
+        <textarea id="print-text" rows="3" placeholder="Up to 3 lines of 30 letters" spellcheck="false"></textarea>
+      </div>
+      <p id="print-label-hint" class="hint" hidden></p>
       <p id="print-corner-hint" class="hint">Rounded corners are slower to lift off the bed as the print cools. The ground within a corner is squeezed to fit, by up to 0.4 of the radius.</p>
       <p id="print-buildings-hint" class="hint" hidden></p>
       <div id="print-status" class="status" aria-live="polite"></div>

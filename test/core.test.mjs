@@ -443,7 +443,7 @@ test('terrain STL faces outward: top normals point up, bottom down', () => {
 
 test('a print KML carries the square, the settings and the model figures', () => {
   const centre = { name: 'Mount Washington, New Hampshire', lat: 44.2706, lon: -71.3033 };
-  const set = { sideKm: 20, widthMm: 120, cells: 200, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: false, cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7 };
+  const set = { sideKm: 20, widthMm: 120, cells: 200, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7 };
   const model = { zoom: 12, pixelM: 27.8, lowM: 410, highM: 1916, reliefMm: 13.55, triangles: 81590 };
   const kml = core.printKml({ centre, set, model, stlFile: 'reach-mount-washington-20km.stl', made: new Date('2026-10-15T12:00:00Z') });
   assert.match(kml, /<Data name="heightStretch"><displayName>Height stretch \(x\)<\/displayName><value>1.5<\/value><\/Data>/);
@@ -465,7 +465,7 @@ test('a print KML carries the square, the settings and the model figures', () =>
 
 test('a print KML round-trips awkward names, and works without a model', () => {
   const centre = { name: 'Rock & "Roll" <Hills>', lat: -33.9, lon: 18.4 };
-  const set = { sideKm: 5, widthMm: 80, cells: 120, exaggeration: 10, baseMm: 2, seaFloorM: 1000, depthStretch: 4, shoreMm: 0.8, shoreRidge: false, label: false, cornerMm: 0, shape: 'rectangle', aspect: 5, bearing: 29, buildings: false, buildingDefaultM: 7 };
+  const set = { sideKm: 5, widthMm: 80, cells: 120, exaggeration: 10, baseMm: 2, seaFloorM: 1000, depthStretch: 4, shoreMm: 0.8, shoreRidge: false, label: false, labelText: '', cornerMm: 0, shape: 'rectangle', aspect: 5, bearing: 29, buildings: false, buildingDefaultM: 7 };
   const kml = core.printKml({ centre, set });
   assert.match(kml, /Rock &amp; &quot;Roll&quot; &lt;Hills&gt;/);
   assert.doesNotMatch(kml, /metresPerPixel/);
@@ -677,7 +677,7 @@ test('each building is a closed solid standing on the terrain, courtyards and al
 
 test('a print KML keeps the building settings and what came of them', () => {
   const centre = { name: 'Sunny Isles Beach', lat: 25.94, lon: -80.12 };
-  const set = { sideKm: 1, widthMm: 120, cells: 200, exaggeration: 1, baseMm: 3, seaFloorM: 0, depthStretch: 1, shoreMm: 0, shoreRidge: false, label: false, cornerMm: 10, shape: 'square', aspect: 2, bearing: 0, buildings: true, buildingDefaultM: 10 };
+  const set = { sideKm: 1, widthMm: 120, cells: 200, exaggeration: 1, baseMm: 3, seaFloorM: 0, depthStretch: 1, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 10, shape: 'square', aspect: 2, bearing: 0, buildings: true, buildingDefaultM: 10 };
   const model = { zoom: 14, pixelM: 8.6, lowM: 0, highM: 4, reliefMm: 0.5, triangles: 5000,
     buildings: { count: 111, tagged: 59, inData: 1, tallestM: 203.4, readAt: '2026-10-16' } };
   const kml = core.printKml({ centre, set, model });
@@ -688,10 +688,10 @@ test('a print KML keeps the building settings and what came of them', () => {
 
 test('the label says the centre, the ground covered and the stretch, and the depth stretch when it differs', () => {
   const centre = { lat: 44.27058, lon: -71.30333 };
-  const set = { sideKm: 20, exaggeration: 1.5, seaFloorM: 0, depthStretch: 1.5 };
-  assert.deepEqual(core.labelLines(centre, set), ['44.2706°N 71.3033°W', '20 × 20 KM', 'VERTICAL ×1.5']);
-  assert.deepEqual(core.labelLines({ lat: -33.9, lon: 18.4 }, { ...set, seaFloorM: 1000, depthStretch: 4 }).slice(0, 1).concat(
-    core.labelLines({ lat: -33.9, lon: 18.4 }, { ...set, seaFloorM: 1000, depthStretch: 4 }).slice(3)), ['33.9000°S 18.4000°E', 'DEPTH ×4']);
+  const set = { sideKm: 20, exaggeration: 1.5, seaFloorM: 0, depthStretch: 1.5, label: true };
+  assert.deepEqual(core.labelLines(centre, set), { lines: ['44.2706°N 71.3033°W', '20 × 20 KM', 'VERTICAL ×1.5'], wrap: 0 });
+  const { lines } = core.labelLines({ lat: -33.9, lon: 18.4 }, { ...set, seaFloorM: 1000, depthStretch: 4 });
+  assert.deepEqual(lines.slice(0, 1).concat(lines.slice(3)), ['33.9000°S 18.4000°E', 'DEPTH ×4']);
 });
 
 test('the font has every character a label uses, and no outline pinches to a point', () => {
@@ -727,6 +727,33 @@ test('the bottom label fits the model, mirrored to read from underneath', () => 
   assert.ok(Math.min(...foot) < Math.min(...stem)); // and the foot runs west
 });
 
+test('a label takes up to three lines of its own text, over the centre or alone', () => {
+  const centre = { lat: 44.27058, lon: -71.30333 };
+  const set = { sideKm: 20, exaggeration: 1.5, seaFloorM: 0, depthStretch: 1.5, label: true, labelText: '  our   first hike\r\n\nAug 2026\n' };
+  assert.deepEqual(core.labelLines(centre, set), { lines: ['OUR FIRST HIKE', 'AUG 2026', '44.2706°N 71.3033°W', '20 × 20 KM', 'VERTICAL ×1.5'], wrap: 2 });
+  assert.deepEqual(core.labelLines(centre, { ...set, label: false }), { lines: ['OUR FIRST HIKE', 'AUG 2026'], wrap: null });
+  assert.deepEqual(core.labelLines(centre, { ...set, label: false, labelText: '' }).lines, []);
+  assert.deepEqual(core.customLines('a\nb\nc\nd'), ['A', 'B', 'C']);
+  assert.equal(core.customLines('x'.repeat(40))[0].length, core.LABEL_TEXT_CHARS);
+});
+
+test('the font says which typed characters it lacks', () => {
+  assert.deepEqual(core.unprintable("Dave's hike, 2026! (& more?)"), []);
+  assert.deepEqual(core.unprintable('Café ~ café\n~'), ['É', '~']);
+});
+
+test('typed text keeps its lines, where the coordinates may wrap', () => {
+  const n = 11, z = new Array(n * n).fill(3);
+  const lines = ['SUMMIT OF MOUNT WASHINGTON', 'AUG 2026'];
+  assert.deepEqual(core.bottomLabel(lines, z, n, 60, null, 0).lines, ['SUMMIT', 'OF', 'MOUNT', 'WASHINGTON', 'AUG 2026']);
+  assert.deepEqual(core.bottomLabel(lines, z, n, 120, null, 0, null).lines, lines);
+  // kept whole, a long line can be too long for a small model
+  assert.match(core.bottomLabel(lines, z, n, 60, null, 0, null).why, /too small/);
+  // under typed text, it is the coordinates that wrap
+  const both = ['OUR HIKE', '44.2706°N 71.3033°W', '20 × 20 KM'];
+  assert.deepEqual(core.bottomLabel(both, z, n, 60, null, 0, 1).lines, ['OUR HIKE', '44.2706°N', '71.3033°W', '20 × 20 KM']);
+});
+
 test('a small model takes the coordinates on two lines, a tiny one gets no label, nor a thin one', () => {
   const lines = ['44.2706°N 71.3033°W', '20 × 20 KM', 'VERTICAL ×1.5'];
   const n = 11;
@@ -755,7 +782,7 @@ test('a labelled print is still one closed solid, the letters cut up into its bo
 
 test('a print KML keeps the label setting and what was cut', () => {
   const centre = { name: 'Mount Washington', lat: 44.2706, lon: -71.3033 };
-  const set = { sideKm: 20, widthMm: 120, cells: 200, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: true, cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7 };
+  const set = { sideKm: 20, widthMm: 120, cells: 200, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: true, labelText: 'Our first hike\nAugust 2026 & <3', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7 };
   const label = { lines: ['44.2706°N 71.3033°W', '20 × 20 KM', 'VERTICAL ×1.5'], pxMm: 0.9, depthMm: 0.6 };
   const kml = core.printKml({ centre, set, model: { zoom: 12, pixelM: 27.8, lowM: 410, highM: 1916, reliefMm: 13.55, triangles: 1, label } });
   assert.match(kml, /<Data name="labelText">.*<value>44.2706°N 71.3033°W \/ 20 × 20 KM \/ VERTICAL ×1.5<\/value>/);

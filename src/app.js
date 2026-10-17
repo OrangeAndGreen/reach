@@ -694,7 +694,8 @@ function printSettings() {
     seaFloorM: Number($('print-sea').value),
     depthStretch: Number($('print-depth').value),
     ...shoreSetting($('print-shore').value),
-    label: $('print-label').value === 'on',
+    label: ['on', 'both'].includes($('print-label').value),
+    labelText: ['text', 'both'].includes($('print-label').value) ? $('print-text').value : '',
     cornerMm: Number($('print-corner').value),
     shape: $('print-shape').value,
     aspect: Number($('print-aspect').value),
@@ -854,7 +855,8 @@ async function buildModel() {
     if (shore) scaled.mm = core.markShore(scaled.mm, shore, set.shoreMm, set.shoreRidge);
     const extra = placed ? core.buildingTriangles(placed.buildings, scaled.mm, n, { ...set, ...scaled }) : [];
     if (buildings) buildings.triangles = extra.length / 3;
-    const label = set.label ? core.bottomLabel(core.labelLines(centre, set), scaled.mm, n, set.widthMm, outline, set.bearing) : null;
+    const { lines, wrap } = core.labelLines(centre, set);
+    const label = lines.length ? core.bottomLabel(lines, scaled.mm, n, set.widthMm, outline, set.bearing, wrap) : null;
     const cutLabel = label?.why ? null : label;
     let stl, top = 2 * (n - 1) ** 2;
     if (cut) {
@@ -910,7 +912,21 @@ for (const id of ['print-cells', 'print-base', 'print-default']) $(id).addEventL
 // The width sets the corner radius against the outline, so the map's outline follows it.
 $('print-width').addEventListener('change', () => { drawPrintSquare(false); buildModel(); });
 $('print-shore').addEventListener('change', () => { $('print-shore-hint').hidden = $('print-shore').value === '0'; buildModel(); });
-$('print-label').addEventListener('change', () => { $('print-label-hint').hidden = $('print-label').value !== 'on'; buildModel(); });
+$('print-label').addEventListener('change', () => { showLabelControls(); buildModel(); });
+$('print-text').addEventListener('input', showLabelControls);
+$('print-text').addEventListener('change', buildModel);
+function showLabelControls() {
+  const mode = $('print-label').value;
+  const own = mode === 'text' || mode === 'both';
+  $('print-text-field').hidden = !own;
+  $('print-label-hint').hidden = mode === 'none';
+  const what = { on: 'The centre, the ground covered and the height stretch', text: 'Your text', both: 'Your text, then the centre, the ground covered and the height stretch,' }[mode];
+  const missing = own ? core.unprintable($('print-text').value) : [];
+  $('print-label-hint').textContent = `${what} under an arrow pointing north, cut 0.6 mm up into the underside and mirrored, so it reads when the print is turned over. Print it flat side down as usual: each letter is a short bridge. Turn the preview over to see it.` +
+    (own ? ` The letters are capitals; the font has digits and . , - : ' ! ? & / ( ) + # ° ×.` : '') +
+    (missing.length ? ` It has no ${missing.join(' ')}, which print as spaces.` : '');
+}
+showLabelControls();
 $('print-corner').addEventListener('change', () => { showShapeControls(); drawPrintSquare(false); buildModel(); });
 function showShapeControls() {
   const shape = $('print-shape').value;
@@ -1213,8 +1229,9 @@ $('print-file').addEventListener('change', async () => {
   }
   $('print-shore').value = shoreValue;
   $('print-shore-hint').hidden = set.shoreMm === 0;
-  $('print-label').value = set.label ? 'on' : 'none';
-  $('print-label-hint').hidden = !set.label;
+  $('print-text').value = set.labelText;
+  $('print-label').value = set.labelText.trim() ? (set.label ? 'both' : 'text') : set.label ? 'on' : 'none';
+  showLabelControls();
   choose('print-corner', set.cornerMm, set.cornerMm ? `Rounded ${set.cornerMm} mm` : 'Square');
   $('print-shape').value = set.shape;
   choose('print-aspect', set.aspect, `${set.aspect} : 1`);
