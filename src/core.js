@@ -953,12 +953,14 @@ export function unprintable(text = '') {
 }
 
 /**
- * What the label under a print says: with set.label, the centre, the ground
- * covered, and the height stretch, with the depth stretch when the sea floor
- * has its own; then set.labelText's lines (customLines) under them.
+ * What the label under a print says: set.labelText's lines (customLines),
+ * then with set.label the centre, the ground covered, and the height
+ * stretch, with the depth stretch when the sea floor has its own. wrap is
+ * the line the coordinates are on, or null without them.
  */
 export function labelLines(centre, set) {
-  return [...(set.label ? infoLines(centre, set) : []), ...customLines(set.labelText)];
+  const own = customLines(set.labelText);
+  return { lines: [...own, ...(set.label ? infoLines(centre, set) : [])], wrap: set.label ? own.length : null };
 }
 
 function infoLines(centre, set) {
@@ -1061,14 +1063,14 @@ export function labelInk(lines, north = null) {
  * lines in the font, as large as fits (the coordinates go on two lines when
  * that makes them larger), centred and mirrored so they read when the print
  * is turned over, the model's top still at the top. With north (the bearing
- * the top faces), an arrow above them points north. wrapFirst false keeps
- * the first line whole, for text typed as it should read. Returns { lines, pxMm,
+ * the top faces), an arrow above them points north. wrap is the line
+ * with the coordinates on it, or null to keep every line whole. Returns { lines, pxMm,
  * depthMm, cellMm, ink, w, h, mid, midY }: the ink grid with a millimetre or
  * so of bare bed around it, cellMm to a cell, centred on mid, midY; or { why }
  * when the label can't be cut.
  */
-export function bottomLabel(lines, zMm, n, widthMm, shape = null, north = null, wrapFirst = true) {
-  const layouts = wrapFirst ? [lines, [...lines[0].split(' '), ...lines.slice(1)]] : [lines];
+export function bottomLabel(lines, zMm, n, widthMm, shape = null, north = null, wrap = 0) {
+  const layouts = wrap == null ? [lines] : [lines, [...lines.slice(0, wrap), ...lines[wrap].split(' '), ...lines.slice(wrap + 1)]];
   const [mid, midY] = shape ? shape.centre : [widthMm / 2, widthMm / 2];
   const padOf = (pxMm) => Math.ceil(2 / pxMm); // a millimetre or so of cells
   // Within a shape, the box and a millimetre round it must clear the outline.

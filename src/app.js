@@ -855,8 +855,8 @@ async function buildModel() {
     if (shore) scaled.mm = core.markShore(scaled.mm, shore, set.shoreMm, set.shoreRidge);
     const extra = placed ? core.buildingTriangles(placed.buildings, scaled.mm, n, { ...set, ...scaled }) : [];
     if (buildings) buildings.triangles = extra.length / 3;
-    const lines = core.labelLines(centre, set);
-    const label = lines.length ? core.bottomLabel(lines, scaled.mm, n, set.widthMm, outline, set.bearing, set.label) : null;
+    const { lines, wrap } = core.labelLines(centre, set);
+    const label = lines.length ? core.bottomLabel(lines, scaled.mm, n, set.widthMm, outline, set.bearing, wrap) : null;
     const cutLabel = label?.why ? null : label;
     let stl, top = 2 * (n - 1) ** 2;
     if (cut) {
@@ -920,7 +920,7 @@ function showLabelControls() {
   const own = mode === 'text' || mode === 'both';
   $('print-text-field').hidden = !own;
   $('print-label-hint').hidden = mode === 'none';
-  const what = { on: 'The centre, the ground covered and the height stretch', text: 'Your text', both: 'The centre, the ground covered and the height stretch, then your text,' }[mode];
+  const what = { on: 'The centre, the ground covered and the height stretch', text: 'Your text', both: 'Your text, then the centre, the ground covered and the height stretch,' }[mode];
   const missing = own ? core.unprintable($('print-text').value) : [];
   $('print-label-hint').textContent = `${what} under an arrow pointing north, cut 0.6 mm up into the underside and mirrored, so it reads when the print is turned over. Print it flat side down as usual: each letter is a short bridge. Turn the preview over to see it.` +
     (own ? ` The letters are capitals; the font has digits and . , - : ' ! ? & / ( ) + # ° ×.` : '') +

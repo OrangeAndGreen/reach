@@ -689,9 +689,9 @@ test('a print KML keeps the building settings and what came of them', () => {
 test('the label says the centre, the ground covered and the stretch, and the depth stretch when it differs', () => {
   const centre = { lat: 44.27058, lon: -71.30333 };
   const set = { sideKm: 20, exaggeration: 1.5, seaFloorM: 0, depthStretch: 1.5, label: true };
-  assert.deepEqual(core.labelLines(centre, set), ['44.2706°N 71.3033°W', '20 × 20 KM', 'VERTICAL ×1.5']);
-  assert.deepEqual(core.labelLines({ lat: -33.9, lon: 18.4 }, { ...set, seaFloorM: 1000, depthStretch: 4 }).slice(0, 1).concat(
-    core.labelLines({ lat: -33.9, lon: 18.4 }, { ...set, seaFloorM: 1000, depthStretch: 4 }).slice(3)), ['33.9000°S 18.4000°E', 'DEPTH ×4']);
+  assert.deepEqual(core.labelLines(centre, set), { lines: ['44.2706°N 71.3033°W', '20 × 20 KM', 'VERTICAL ×1.5'], wrap: 0 });
+  const { lines } = core.labelLines({ lat: -33.9, lon: 18.4 }, { ...set, seaFloorM: 1000, depthStretch: 4 });
+  assert.deepEqual(lines.slice(0, 1).concat(lines.slice(3)), ['33.9000°S 18.4000°E', 'DEPTH ×4']);
 });
 
 test('the font has every character a label uses, and no outline pinches to a point', () => {
@@ -727,12 +727,12 @@ test('the bottom label fits the model, mirrored to read from underneath', () => 
   assert.ok(Math.min(...foot) < Math.min(...stem)); // and the foot runs west
 });
 
-test('a label takes up to three lines of its own text, under the centre or alone', () => {
+test('a label takes up to three lines of its own text, over the centre or alone', () => {
   const centre = { lat: 44.27058, lon: -71.30333 };
   const set = { sideKm: 20, exaggeration: 1.5, seaFloorM: 0, depthStretch: 1.5, label: true, labelText: '  our   first hike\r\n\nAug 2026\n' };
-  assert.deepEqual(core.labelLines(centre, set), ['44.2706°N 71.3033°W', '20 × 20 KM', 'VERTICAL ×1.5', 'OUR FIRST HIKE', 'AUG 2026']);
-  assert.deepEqual(core.labelLines(centre, { ...set, label: false }), ['OUR FIRST HIKE', 'AUG 2026']);
-  assert.deepEqual(core.labelLines(centre, { ...set, label: false, labelText: '' }), []);
+  assert.deepEqual(core.labelLines(centre, set), { lines: ['OUR FIRST HIKE', 'AUG 2026', '44.2706°N 71.3033°W', '20 × 20 KM', 'VERTICAL ×1.5'], wrap: 2 });
+  assert.deepEqual(core.labelLines(centre, { ...set, label: false }), { lines: ['OUR FIRST HIKE', 'AUG 2026'], wrap: null });
+  assert.deepEqual(core.labelLines(centre, { ...set, label: false, labelText: '' }).lines, []);
   assert.deepEqual(core.customLines('a\nb\nc\nd'), ['A', 'B', 'C']);
   assert.equal(core.customLines('x'.repeat(40))[0].length, core.LABEL_TEXT_CHARS);
 });
@@ -746,9 +746,12 @@ test('typed text keeps its lines, where the coordinates may wrap', () => {
   const n = 11, z = new Array(n * n).fill(3);
   const lines = ['SUMMIT OF MOUNT WASHINGTON', 'AUG 2026'];
   assert.deepEqual(core.bottomLabel(lines, z, n, 60, null, 0).lines, ['SUMMIT', 'OF', 'MOUNT', 'WASHINGTON', 'AUG 2026']);
-  assert.deepEqual(core.bottomLabel(lines, z, n, 120, null, 0, false).lines, lines);
+  assert.deepEqual(core.bottomLabel(lines, z, n, 120, null, 0, null).lines, lines);
   // kept whole, a long line can be too long for a small model
-  assert.match(core.bottomLabel(lines, z, n, 60, null, 0, false).why, /too small/);
+  assert.match(core.bottomLabel(lines, z, n, 60, null, 0, null).why, /too small/);
+  // under typed text, it is the coordinates that wrap
+  const both = ['OUR HIKE', '44.2706°N 71.3033°W', '20 × 20 KM'];
+  assert.deepEqual(core.bottomLabel(both, z, n, 60, null, 0, 1).lines, ['OUR HIKE', '44.2706°N', '71.3033°W', '20 × 20 KM']);
 });
 
 test('a small model takes the coordinates on two lines, a tiny one gets no label, nor a thin one', () => {
