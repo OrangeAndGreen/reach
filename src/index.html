@@ -159,7 +159,9 @@
         <div class="field">
           <label for="print-side">Square</label>
           <select id="print-side">
-            <option value="0.5">0.5 km</option>
+            <option value="0.1">100 m</option>
+            <option value="0.25">250 m</option>
+            <option value="0.5">500 m</option>
             <option value="1">1 km</option>
             <option value="2">2 km</option>
             <option value="5">5 km</option>
@@ -168,6 +170,8 @@
             <option value="40">40 km</option>
             <option value="80">80 km</option>
             <option value="160">160 km</option>
+            <option value="200">200 km</option>
+            <option value="500">500 km</option>
           </select>
         </div>
         <div class="field">
@@ -191,7 +195,7 @@
       <div class="row">
         <div class="field">
           <label for="print-exag">Height stretch <span id="print-exag-value"></span></label>
-          <input id="print-exag" type="range" min="1" max="10" step="0.25" value="1.5">
+          <input id="print-exag" type="range" min="0" max="58" step="1" value="2">
         </div>
         <div class="field">
           <label for="print-base">Base</label>

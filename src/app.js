@@ -689,7 +689,7 @@ function printSettings() {
     sideKm: Number($('print-side').value),
     widthMm: Number($('print-width').value),
     cells: Number($('print-cells').value),
-    exaggeration: Number($('print-exag').value),
+    exaggeration: stretch(),
     baseMm: Number($('print-base').value),
     seaFloorM: Number($('print-sea').value),
     depthStretch: Number($('print-depth').value),
@@ -791,6 +791,8 @@ function osmBuildings(bounds) {
 }
 
 let modelRun = 0;
+/** The edge skew past which a print says its square isn't square on the ground. */
+const SKEW_WARN = 0.05;
 async function buildModel() {
   const run = ++modelRun;
   const set = printSettings();
@@ -849,7 +851,15 @@ async function buildModel() {
     const lifted = buildings?.liftM > core.LIFTED_M
       ? ` The elevation data here holds the buildings: the ground under them reads about ${core.formatHeight(buildings.liftM, state.units)} above the open ground nearby, so the land prints lumpy under them.`
       : '';
-    status('print', `Terrain read at ${Math.round(pixel)} m per pixel${sea} and sampled on a ${n} × ${n} grid.${lifted}${missed}`, Boolean(missed));
+    // Under about 40 pixels across, the ground is a smooth blur of a few readings.
+    const smooth = (set.sideKm * 1000) / pixel < 40
+      ? ` The square is only ${Math.round((set.sideKm * 1000) / pixel)} pixels of elevation data across, so its ground prints smooth: a square this small is for buildings.`
+      : '';
+    const skew = core.edgeSkew(centre, set.sideKm);
+    const skewed = skew > SKEW_WARN
+      ? ` The square is even in latitude and longitude, so on the ground its ${centre.lat >= 0 ? 'north' : 'south'} edge is ${Math.round(skew * 100)}% shorter than its ${centre.lat >= 0 ? 'south' : 'north'} edge, and the print stretches it to match.`
+      : '';
+    status('print', `Terrain read at ${Math.round(pixel)} m per pixel${sea} and sampled on a ${n} × ${n} grid.${smooth}${skewed}${lifted}${missed}`, Boolean(missed));
     $('print-stl').disabled = false;
     $('print-kml').disabled = false;
   } catch (err) {
@@ -860,12 +870,22 @@ async function buildModel() {
 }
 $('print-run').addEventListener('click', buildModel);
 $('print-side').addEventListener('change', () => { drawPrintSquare(true); showBuildingControls(); buildModel(); });
-$('print-exag').addEventListener('input', () => { $('print-exag-value').textContent = `× ${$('print-exag').value}`; });
+// The slider moves through stops, so x1-x10 keeps its quarter steps beside x50.
+let stretchStops = core.STRETCH_STOPS;
+$('print-exag').max = String(stretchStops.length - 1);
+function stretch() { return stretchStops[Number($('print-exag').value)]; }
+function setStretch(value) {
+  stretchStops = core.withStop(stretchStops, value);
+  $('print-exag').max = String(stretchStops.length - 1);
+  $('print-exag').value = String(stretchStops.indexOf(value));
+  $('print-exag-value').textContent = `× ${value}`;
+}
+$('print-exag').addEventListener('input', () => { $('print-exag-value').textContent = `× ${stretch()}`; });
 $('print-exag').addEventListener('change', buildModel);
 for (const id of ['print-width', 'print-cells', 'print-base', 'print-default']) $(id).addEventListener('change', buildModel);
 $('print-shore').addEventListener('change', () => { $('print-shore-hint').hidden = $('print-shore').value === '0'; buildModel(); });
 $('print-label').addEventListener('change', () => { $('print-label-hint').hidden = $('print-label').value !== 'on'; buildModel(); });
-$('print-exag-value').textContent = `× ${$('print-exag').value}`;
+setStretch(1.5);
 function showSeaControls() {
   const on = Number($('print-sea').value) > 0;
   $('print-depth-field').hidden = !on;
@@ -970,7 +990,7 @@ function renderPrintTable() {
   const tallMm = set.baseMm + scaled.reliefMm;
   const scale = Math.round((set.sideKm * 1e6) / set.widthMm);
   const rows = [
-    ['Ground covered', `${core.formatDistance(set.sideKm, state.units)} square`],
+    ['Ground covered', `${core.formatSide(set.sideKm, state.units)} square`],
     ['Model', `${set.widthMm} × ${set.widthMm} × ${tallMm.toFixed(1)} mm`],
     ['Lowest to highest', `${core.formatHeight(scaled.lowM, state.units)} to ${core.formatHeight(scaled.highM, state.units)}`],
     ['Map scale', `1 : ${scale.toLocaleString('en-US')}`],
@@ -1101,14 +1121,11 @@ $('print-file').addEventListener('change', async () => {
     return;
   }
   const { centre, set } = saved;
-  choose('print-side', set.sideKm, `${set.sideKm} km`);
+  choose('print-side', set.sideKm, core.formatSide(set.sideKm, 'metric'));
   choose('print-width', set.widthMm, `${set.widthMm} mm`);
   choose('print-cells', set.cells, `${set.cells} × ${set.cells}`);
   choose('print-base', set.baseMm, `${set.baseMm} mm`);
-  const exag = $('print-exag');
-  if (set.exaggeration > Number(exag.max)) exag.max = String(set.exaggeration);
-  exag.value = String(set.exaggeration);
-  $('print-exag-value').textContent = `× ${exag.value}`;
+  setStretch(set.exaggeration);
   choose('print-sea', set.seaFloorM, `Down to ${core.formatHeight(set.seaFloorM, state.units)}`);
   const depth = $('print-depth');
   if (set.depthStretch > Number(depth.max)) depth.max = String(set.depthStretch);

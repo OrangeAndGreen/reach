@@ -516,6 +516,40 @@ export function squareBounds(center, sideKm) {
 }
 
 /**
+ * How much shorter on the ground the square's poleward edge is than its other
+ * edge, as a fraction. The box is even in degrees, so both edges span the same
+ * longitude: at 45 degrees about 3% at 200 km and 7.5% at 500 km.
+ */
+export function edgeSkew(center, sideKm) {
+  const b = squareBounds(center, sideKm);
+  const [lo, hi] = [Math.abs(b.south), Math.abs(b.north)].sort((x, y) => x - y);
+  // a box across the equator: its widest line is the equator, not an edge
+  const widest = b.south < 0 && b.north > 0 ? 0 : lo;
+  return 1 - Math.cos(Math.min(hi, 89.9) * RAD) / Math.cos(widest * RAD);
+}
+
+/** A square's side for the page: metres under 1 km, feet under half a mile. */
+export function formatSide(km, units) {
+  if (units === 'imperial') {
+    const mi = km * 0.621371;
+    return mi < 0.5 ? `${(Math.round(mi * 528) * 10).toLocaleString('en-US')} ft` : formatDistance(km, units);
+  }
+  return km < 1 ? `${Math.round(km * 1000)} m` : formatDistance(km, units);
+}
+
+const steps = (from, to, by) => Array.from({ length: Math.round((to - from) / by) + 1 }, (_, i) => from + i * by);
+/**
+ * The height stretch slider's stops: quarter steps up to x10, where most prints
+ * sit, then coarser ones for the big squares, whose relief is a millimetre at x1.
+ */
+export const STRETCH_STOPS = [...steps(1, 10, 0.25), ...steps(11, 20, 1), ...steps(22.5, 50, 2.5)];
+
+/** The stops with value among them, for a saved print whose stretch is between or past them. */
+export function withStop(stops, value) {
+  return stops.includes(value) ? stops : [...stops, value].sort((a, b) => a - b);
+}
+
+/**
  * A lon/lat box in global pixels at zoom z (256 per tile), and the tiles that
  * cover it, each with its own top-left in the same pixels. Tile x wraps across
  * the date line; left keeps the unwrapped position so tiles still line up.

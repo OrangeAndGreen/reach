@@ -294,6 +294,33 @@ test('square bounds are sideKm across', () => {
   near(core.haversineKm({ lat: b.south, lon: boston.lon }, { lat: b.north, lon: boston.lon }), 20, 0.1);
 });
 
+test('edge skew grows with the square and the latitude', () => {
+  near(core.edgeSkew({ lat: 45, lon: 0 }, 500), 0.075, 0.005);
+  near(core.edgeSkew({ lat: 45, lon: 0 }, 200), 0.031, 0.003);
+  assert.ok(core.edgeSkew({ lat: 60, lon: 0 }, 500) > core.edgeSkew({ lat: 45, lon: 0 }, 500));
+  near(core.edgeSkew({ lat: -45, lon: 0 }, 500), 0.075, 0.005);
+  assert.ok(core.edgeSkew({ lat: 0, lon: 0 }, 500) < 0.002); // both edges barely off the equator
+});
+
+test('a square side reads in metres or feet when small', () => {
+  assert.equal(core.formatSide(0.25, 'metric'), '250 m');
+  assert.equal(core.formatSide(0.1, 'metric'), '100 m');
+  assert.equal(core.formatSide(20, 'metric'), '20 km');
+  assert.equal(core.formatSide(0.25, 'imperial'), '820 ft');
+  assert.equal(core.formatSide(500, 'imperial'), '311 mi');
+});
+
+test('stretch stops run from x1 to x50 and take in a saved value', () => {
+  assert.equal(core.STRETCH_STOPS[0], 1);
+  assert.equal(core.STRETCH_STOPS.at(-1), 50);
+  assert.ok(core.STRETCH_STOPS.includes(1.5) && core.STRETCH_STOPS.includes(9.75) && core.STRETCH_STOPS.includes(27.5));
+  assert.ok(core.STRETCH_STOPS.every((v, i, a) => i === 0 || v > a[i - 1]));
+  assert.equal(core.withStop(core.STRETCH_STOPS, 2), core.STRETCH_STOPS);
+  const more = core.withStop(core.STRETCH_STOPS, 12.5);
+  assert.equal(more[more.indexOf(12.5) - 1], 12);
+  assert.equal(core.withStop(core.STRETCH_STOPS, 80).at(-1), 80);
+});
+
 test('print zoom is fine enough for the grid and within budget', () => {
   const z = core.printZoom(boston, 20, 200);
   assert.ok(core.pixelMetres(boston.lat, z) <= 200);
