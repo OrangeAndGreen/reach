@@ -696,6 +696,9 @@ function printSettings() {
     ...shoreSetting($('print-shore').value),
     label: $('print-label').value === 'on',
     cornerMm: Number($('print-corner').value),
+    shape: $('print-shape').value,
+    aspect: Number($('print-aspect').value),
+    bearing: Number($('print-turn').value),
     buildings: $('print-buildings').value === 'osm' && Number($('print-side').value) <= core.BUILDINGS_MAX_KM,
     buildingDefaultM: Number($('print-default').value),
   };
@@ -714,14 +717,20 @@ function setPrintCentre(place) {
   buildModel();
 }
 
+/** The print's outline on the map, as Leaflet lat/lngs: the shape, turned. */
+function printOutline(set) {
+  const frame = core.printFrame(state.print, set.sideKm, set.widthMm, set.bearing);
+  const { ring } = core.shapeOutline(set.shape, set.widthMm, { aspect: set.aspect, cornerMm: set.shape === 'square' ? 0 : set.cornerMm });
+  return ring.map(([x, y]) => { const p = frame.toLonLat(x, y); return [p.lat, p.lon]; });
+}
+
 function drawPrintSquare(fit) {
   printLayer.clearLayers();
   $('print-name').textContent = `Centred on ${state.print.name}.`;
-  const b = core.squareBounds(state.print, Number($('print-side').value));
-  const corners = [[b.south, b.west], [b.north, b.east]];
-  // A white casing under the line keeps the square readable over busy city maps.
-  L.rectangle(corners, { color: '#ffffff', weight: 7, opacity: 0.9, fill: false, interactive: false }).addTo(printLayer);
-  const rect = L.rectangle(corners, { color: cssVar('--accent'), weight: 3, fill: true, fillOpacity: 0.06, interactive: false });
+  const outline = printOutline(printSettings());
+  // A white casing under the line keeps the outline readable over busy city maps.
+  L.polygon(outline, { color: '#ffffff', weight: 7, opacity: 0.9, fill: false, interactive: false }).addTo(printLayer);
+  const rect = L.polygon(outline, { color: cssVar('--accent'), weight: 3, fill: true, fillOpacity: 0.06, interactive: false });
   rect.addTo(printLayer);
   // The centre, so a small nudge is a click just beside it. Not interactive: a click on it still re-centres.
   L.circleMarker([state.print.lat, state.print.lon], { radius: 5, color: '#fff', weight: 2, fillColor: cssVar('--accent'), fillOpacity: 1, interactive: false })
@@ -747,8 +756,9 @@ function sampler(tiles, z) {
 }
 
 /**
- * The print square's n x n grid of heights (row 0 north), sampled from the
- * zoom-z tiles. Returns null when a newer build has started meanwhile.
+ * The print square's n x n grid of heights (row 0 along the model's top,
+ * north unless it is turned), sampled from the zoom-z tiles. Returns null
+ * when a newer build has started meanwhile.
  */
 async function readPrintGrid(centre, set, z, run, what) {
   const list = core.tilesForRadius(centre, set.sideKm * 0.71, z);
@@ -759,14 +769,13 @@ async function readPrintGrid(centre, set, z, run, what) {
     if (run === modelRun) progress('print', `Reading the ${what}: tile ${++done} of ${list.length}`, done / list.length);
   }));
   if (run !== modelRun) return null;
-  const b = core.squareBounds(centre, set.sideKm);
+  const frame = core.printFrame(centre, set.sideKm, set.widthMm, set.bearing);
   const at = sampler(tiles, z);
-  const n = set.cells;
+  const n = set.cells, step = set.widthMm / (n - 1);
   const heights = new Array(n * n);
   for (let j = 0; j < n; j++) {
-    const lat = b.north - (j / (n - 1)) * (b.north - b.south);
     for (let i = 0; i < n; i++) {
-      const lon = b.west + (i / (n - 1)) * (b.east - b.west);
+      const { lon, lat } = frame.toLonLat(i * step, (n - 1 - j) * step);
       const p = core.lonLatToTile(lon, lat, z);
       heights[j * n + i] = at(p.x * 256, p.y * 256);
     }
@@ -812,10 +821,14 @@ async function buildModel() {
     }
     const n = set.cells;
     const pixel = core.pixelMetres(centre.lat, z);
+    const frame = core.printFrame(centre, set.sideKm, set.widthMm, set.bearing);
+    // A square keeps the whole grid and its own rounded corners; any other shape is cut from the grid.
+    const outline = set.shape === 'square' ? null : core.shapeOutline(set.shape, set.widthMm, set);
+    const cut = outline && core.shapeCells(outline.ring, n, set.widthMm);
     let placed = null, buildings = null, missed = '';
     if (set.buildings) {
       status('print', 'Fetching the buildings from OpenStreetMap…');
-      const bounds = core.squareBounds(centre, set.sideKm);
+      const bounds = frame.bounds;
       let reply = null;
       try {
         reply = await osmBuildings(bounds);
@@ -825,7 +838,7 @@ async function buildModel() {
       if (run !== modelRun) return;
       if (reply) {
         const { osm, readAt } = reply;
-        const footprints = core.buildingFootprints(osm, bounds, set.widthMm);
+        const footprints = core.buildingFootprints(osm, bounds, set.widthMm, { frame, pieces: outline?.pieces });
         // Around a building the terrain may hold, its surroundings are read a pixel and a half out, clear of the blur.
         placed = core.placeBuildings(footprints, heights, n, { ...set, padM: 1.5 * pixel, defaultM: set.buildingDefaultM });
         heights = placed.heights;
@@ -836,15 +849,23 @@ async function buildModel() {
         };
       }
     }
-    const scaled = core.printHeights(heights, set);
+    const scaled = core.printHeights(heights, set, cut?.used);
     const shore = set.shoreMm > 0 ? core.shorePoints(heights, n) : null;
     if (shore) scaled.mm = core.markShore(scaled.mm, shore, set.shoreMm, set.shoreRidge);
     const extra = placed ? core.buildingTriangles(placed.buildings, scaled.mm, n, { ...set, ...scaled }) : [];
     if (buildings) buildings.triangles = extra.length / 3;
-    const label = set.label ? core.bottomLabel(core.labelLines(centre, set), scaled.mm, n, set.widthMm) : null;
-    const stl = core.terrainStl(scaled.mm, n, set.widthMm, extra, label?.why ? null : label, set.cornerMm);
+    const label = set.label ? core.bottomLabel(core.labelLines(centre, set), scaled.mm, n, set.widthMm, outline, set.bearing) : null;
+    const cutLabel = label?.why ? null : label;
+    let stl, top = 2 * (n - 1) ** 2;
+    if (cut) {
+      const mesh = core.shapeMesh(scaled.mm, cut, extra, cutLabel);
+      stl = core.writeStl(mesh.tris);
+      top = mesh.top;
+    } else {
+      stl = core.terrainStl(scaled.mm, n, set.widthMm, extra, cutLabel, set.cornerMm);
+    }
     state.model = {
-      stl, scaled, set, centre, zoom: z, pixel, buildings, shore, label,
+      stl, top, outline, scaled, set, centre, zoom: z, pixel, buildings, shore, label,
       seaZoom, seaPixel: seaZoom == null ? null : core.pixelMetres(centre.lat, seaZoom),
     };
     showModel();
@@ -857,9 +878,11 @@ async function buildModel() {
       ? ` The square is only ${Math.round((set.sideKm * 1000) / pixel)} pixels of elevation data across, so its ground prints smooth: a square this small is for buildings.`
       : '';
     const skew = core.edgeSkew(centre, set.sideKm);
-    const skewed = skew > SKEW_WARN
-      ? ` The square is even in latitude and longitude, so on the ground its ${centre.lat >= 0 ? 'north' : 'south'} edge is ${Math.round(skew * 100)}% shorter than its ${centre.lat >= 0 ? 'south' : 'north'} edge, and the print stretches it to match.`
-      : '';
+    const pole = centre.lat >= 0 ? 'north' : 'south', equator = centre.lat >= 0 ? 'south' : 'north';
+    const skewed = skew <= SKEW_WARN ? ''
+      : set.shape === 'square' && !set.bearing
+        ? ` The square is even in latitude and longitude, so on the ground its ${pole} edge is ${Math.round(skew * 100)}% shorter than its ${equator} edge, and the print stretches it to match.`
+        : ` The print is even in latitude and longitude, so on the ground its ${pole}ern part is up to ${Math.round(skew * 100)}% narrower east to west than its ${equator}ern part, and the print stretches it to match.`;
     status('print', `Terrain read at ${Math.round(pixel)} m per pixel${sea} and sampled on a ${n} × ${n} grid.${smooth}${skewed}${lifted}${missed}`, Boolean(missed));
     $('print-stl').disabled = false;
     $('print-kml').disabled = false;
@@ -883,10 +906,28 @@ function setStretch(value) {
 }
 $('print-exag').addEventListener('input', () => { $('print-exag-value').textContent = `× ${stretch()}`; });
 $('print-exag').addEventListener('change', buildModel);
-for (const id of ['print-width', 'print-cells', 'print-base', 'print-default']) $(id).addEventListener('change', buildModel);
+for (const id of ['print-cells', 'print-base', 'print-default']) $(id).addEventListener('change', buildModel);
+// The width sets the corner radius against the outline, so the map's outline follows it.
+$('print-width').addEventListener('change', () => { drawPrintSquare(false); buildModel(); });
 $('print-shore').addEventListener('change', () => { $('print-shore-hint').hidden = $('print-shore').value === '0'; buildModel(); });
 $('print-label').addEventListener('change', () => { $('print-label-hint').hidden = $('print-label').value !== 'on'; buildModel(); });
-$('print-corner').addEventListener('change', () => { $('print-corner-hint').hidden = $('print-corner').value === '0'; buildModel(); });
+$('print-corner').addEventListener('change', () => { showShapeControls(); drawPrintSquare(false); buildModel(); });
+function showShapeControls() {
+  const shape = $('print-shape').value;
+  $('print-aspect-field').hidden = shape !== 'rectangle';
+  $('print-corner-field').hidden = shape === 'circle';
+  $('print-corner-hint').hidden = shape === 'circle' || $('print-corner').value === '0';
+  $('print-corner-hint').textContent = shape === 'square'
+    ? 'Rounded corners are slower to lift off the bed as the print cools. The ground within a corner is squeezed to fit, by up to 0.4 of the radius.'
+    : 'Rounded corners are slower to lift off the bed as the print cools. The ground beyond the curve is left off.';
+  const turn = Number($('print-turn').value);
+  $('print-turn-value').textContent = turn ? `${(turn + 360) % 360}° (${compass(turn)})` : 'north up';
+}
+for (const id of ['print-shape', 'print-aspect']) $(id).addEventListener('change', () => { showShapeControls(); drawPrintSquare(false); buildModel(); });
+// The outline turns on the map as the slider moves; the model builds once it is let go.
+$('print-turn').addEventListener('input', () => { showShapeControls(); drawPrintSquare(false); });
+$('print-turn').addEventListener('change', buildModel);
+showShapeControls();
 setStretch(1.5);
 function showSeaControls() {
   const on = Number($('print-sea').value) > 0;
@@ -960,7 +1001,7 @@ function showModel() {
   const colours = new Float32Array(count * 9);
   const land = new THREE.Color(0xc9b79c), sea = new THREE.Color(0x6f9bc7), built = new THREE.Color(0x9a9da3), groove = new THREE.Color(0x4a3f33);
   const n = m.set.cells, step = m.set.widthMm / (n - 1);
-  const topVertices = 2 * (n - 1) ** 2 * 3;
+  const topVertices = m.top * 3;
   const firstBuilt = (count - (m.buildings?.triangles || 0)) * 3;
   const onShore = (v) => m.shore[(n - 1 - Math.round(pos[v * 3 + 1] / step)) * n + Math.round(pos[v * 3] / step)];
   // a label pocket: a triangle with no point above the pocket's depth, and one off the bed
@@ -991,9 +1032,14 @@ function renderPrintTable() {
   const { set, scaled } = m;
   const tallMm = set.baseMm + scaled.reliefMm;
   const scale = Math.round((set.sideKm * 1e6) / set.widthMm);
+  const side = (km) => core.formatSide(km, state.units);
+  const ground = set.shape === 'rectangle' ? `${side(set.sideKm)} × ${side(set.sideKm / set.aspect)} rectangle` : `${side(set.sideKm)} ${set.shape}`;
+  const ring = m.outline ? m.outline.ring : [[0, 0], [set.widthMm, set.widthMm]];
+  const across = (k) => +(Math.max(...ring.map((p) => p[k])) - Math.min(...ring.map((p) => p[k]))).toFixed(1);
+  const corners = set.cornerMm && set.shape !== 'circle' ? `, corners rounded ${set.cornerMm} mm` : '';
   const rows = [
-    ['Ground covered', `${core.formatSide(set.sideKm, state.units)} square`],
-    ['Model', `${set.widthMm} × ${set.widthMm} × ${tallMm.toFixed(1)} mm${set.cornerMm ? `, corners rounded ${set.cornerMm} mm` : ''}`],
+    ['Ground covered', `${ground}${set.bearing ? `, its top facing ${(set.bearing + 360) % 360}° (${compass(set.bearing)})` : ''}`],
+    ['Model', `${across(0)} × ${across(1)} × ${tallMm.toFixed(1)} mm${corners}`],
     ['Lowest to highest', `${core.formatHeight(scaled.lowM, state.units)} to ${core.formatHeight(scaled.highM, state.units)}`],
     ['Map scale', `1 : ${scale.toLocaleString('en-US')}`],
     ['Height stretch', `× ${set.exaggeration}, so 1 mm of model is ${core.formatHeight(1 / (scaled.mmPerMetre * set.exaggeration), state.units)}`],
@@ -1004,6 +1050,12 @@ function renderPrintTable() {
     ['STL', `${(m.stl.byteLength / 1048576).toFixed(1)} MB, ${new DataView(m.stl).getUint32(80, true).toLocaleString('en-US')} triangles`],
   ];
   $('print-table').innerHTML = `<tbody>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</tbody>`;
+}
+
+/** A bearing as the nearest of the 16 compass points. */
+function compass(deg) {
+  const names = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+  return names[Math.round((((deg % 360) + 360) % 360) / 22.5) % 16];
 }
 
 function seaFloorText(set, scaled) {
@@ -1024,7 +1076,7 @@ function shoreText({ set, shore }) {
 
 function labelText(label) {
   if (label.why) return `None: ${label.why}`;
-  return `${label.lines.map(escapeHtml).join(' / ')}, letters ${(label.pxMm * 7).toFixed(1)} mm tall, ${label.depthMm.toFixed(1)} mm deep`;
+  return `${label.lines.map(escapeHtml).join(' / ')} under a north arrow, letters ${(label.pxMm * 7).toFixed(1)} mm tall, ${label.depthMm.toFixed(1)} mm deep`;
 }
 
 function buildingsText({ buildings: b, set }) {
@@ -1040,7 +1092,8 @@ function buildingsText({ buildings: b, set }) {
 
 function printFileName(m, ext) {
   const slug = m.centre.name.split(',')[0].toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'print';
-  return `reach-${slug}-${m.set.sideKm}km.${ext}`;
+  const shape = m.set.shape && m.set.shape !== 'square' ? `-${m.set.shape}` : '';
+  return `reach-${slug}-${m.set.sideKm}km${shape}.${ext}`;
 }
 
 $('print-stl').addEventListener('click', () => {
@@ -1069,28 +1122,49 @@ function choose(id, value, label) {
 }
 
 /**
- * The map layer on show, cropped to the print square, as a PNG: tiles fetched
- * at the most detailed zoom that keeps the square within 2,048 px.
+ * The map layer on show, cropped to the print, as a PNG: tiles fetched at the
+ * most detailed zoom that keeps the print within 2,048 px. A turned print's
+ * map is turned to match, its top at the image's top, and a shape other than
+ * a square leaves the image clear outside it.
  */
 $('print-map').addEventListener('click', async () => {
   const layer = map.hasLayer(streets) ? streets : topo;
   const set = printSettings();
-  const b = core.squareBounds(state.print, set.sideKm);
+  const frame = core.printFrame(state.print, set.sideKm, set.widthMm, set.bearing);
+  const b = frame.bounds;
   const z = core.mapImageZoom(b, layer.options.maxZoom);
   const box = core.pixelBox(b, z);
-  const w = Math.round(box.width), h = Math.round(box.height);
   $('print-map').disabled = true;
   try {
-    const canvas = new OffscreenCanvas(w, h);
-    const ctx = canvas.getContext('2d');
+    const tiles = new OffscreenCanvas(Math.round(box.width), Math.round(box.height));
+    const tctx = tiles.getContext('2d');
     let done = 0;
     await Promise.all(box.tiles.map((t, k) => limited(async () => {
       const url = L.Util.template(layer._url, { s: 'abc'[k % 3], z: t.z, x: t.x, y: t.y });
       const res = await fetch(url);
       if (!res.ok) throw new Error(`map tile ${t.z}/${t.x}/${t.y}: ${res.status}`);
-      ctx.drawImage(await createImageBitmap(await res.blob()), t.left - box.left, t.top - box.top);
+      tctx.drawImage(await createImageBitmap(await res.blob()), t.left - box.left, t.top - box.top);
       progress('print', `Fetching the map: tile ${++done} of ${box.tiles.length}`, done / box.tiles.length);
     })));
+    // Where the model's corners fall among the tiles: its top left, top right and bottom left.
+    const W = set.widthMm;
+    const at = (x, y) => { const g = frame.toLonLat(x, y), p = core.lonLatToTile(g.lon, g.lat, z); return [p.x * 256 - box.left, p.y * 256 - box.top]; };
+    const [o, u, v] = [at(0, W), at(W, W), at(0, 0)];
+    const w = Math.round(Math.hypot(u[0] - o[0], u[1] - o[1])), h = Math.round(Math.hypot(v[0] - o[0], v[1] - o[1]));
+    const canvas = new OffscreenCanvas(w, h);
+    const ctx = canvas.getContext('2d');
+    ctx.save();
+    if (set.shape !== 'square') {
+      const { ring } = core.shapeOutline(set.shape, W, set);
+      ctx.beginPath();
+      ring.forEach(([x, y], k) => ctx[k ? 'lineTo' : 'moveTo']((x / W) * w, ((W - y) / W) * h));
+      ctx.closePath();
+      ctx.clip();
+    }
+    // The image's pixels to the tiles' is the turn; drawing the tiles takes its inverse.
+    ctx.setTransform(new DOMMatrix([(u[0] - o[0]) / w, (u[1] - o[1]) / w, (v[0] - o[0]) / h, (v[1] - o[1]) / h, o[0], o[1]]).inverse());
+    ctx.drawImage(tiles, 0, 0);
+    ctx.restore();
     // The tiles' licence asks for the credit on the image.
     const credit = layer.options.credit;
     ctx.font = `${Math.max(11, Math.round(w / 110))}px sans-serif`;
@@ -1142,7 +1216,10 @@ $('print-file').addEventListener('change', async () => {
   $('print-label').value = set.label ? 'on' : 'none';
   $('print-label-hint').hidden = !set.label;
   choose('print-corner', set.cornerMm, set.cornerMm ? `Rounded ${set.cornerMm} mm` : 'Square');
-  $('print-corner-hint').hidden = !set.cornerMm;
+  $('print-shape').value = set.shape;
+  choose('print-aspect', set.aspect, `${set.aspect} : 1`);
+  $('print-turn').value = String(Math.max(-90, Math.min(90, set.bearing)));
+  showShapeControls();
   $('print-buildings').value = set.buildings ? 'osm' : 'none';
   choose('print-default', set.buildingDefaultM, core.formatHeight(set.buildingDefaultM, state.units));
   showBuildingControls();
