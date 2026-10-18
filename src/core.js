@@ -565,6 +565,26 @@ export function formatSide(km, units) {
   return km < 1 ? `${Math.round(km * 1000)} m` : formatDistance(km, units);
 }
 
+/** The smallest and largest side the print takes, in km. */
+export const SIDE_MIN_KM = 0.05;
+export const SIDE_MAX_KM = 500;
+const SIDE_UNITS = { m: 0.001, km: 1, ft: 0.0003048, mi: 1.609344 };
+
+/**
+ * A side typed by hand, "3.5", "3.5 km", "800 m", "2 mi" or "1500 ft", as km
+ * and a label in the unit typed. A bare number is km, or miles in imperial.
+ * Null when it doesn't read or falls outside SIDE_MIN_KM to SIDE_MAX_KM.
+ */
+export function parseSide(text, units) {
+  const m = String(text).trim().toLowerCase().replace(/,/g, '').match(/^(\d*\.?\d+)\s*(m|km|ft|mi)?$/);
+  if (!m) return null;
+  const unit = m[2] || (units === 'imperial' ? 'mi' : 'km');
+  const value = Number(m[1]);
+  const km = value * SIDE_UNITS[unit];
+  if (!(km >= SIDE_MIN_KM && km <= SIDE_MAX_KM)) return null;
+  return { km, label: `${Number(value.toPrecision(4)).toLocaleString('en-US')} ${unit}` };
+}
+
 const steps = (from, to, by) => Array.from({ length: Math.round((to - from) / by) + 1 }, (_, i) => from + i * by);
 /**
  * The height stretch slider's stops: quarter steps up to x10, where most prints
