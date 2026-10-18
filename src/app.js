@@ -895,7 +895,51 @@ async function buildModel() {
   }
 }
 $('print-run').addEventListener('click', buildModel);
-$('print-side').addEventListener('change', () => { drawPrintSquare(true); showBuildingControls(); buildModel(); });
+// "Your own…" opens a box for a side typed by hand, which joins the list in order.
+let lastSide = $('print-side').value;
+function sideChanged() {
+  lastSide = $('print-side').value;
+  drawPrintSquare(true);
+  showBuildingControls();
+  buildModel();
+}
+function addSide(km, label) {
+  const el = $('print-side');
+  let option = [...el.options].find((o) => Number(o.value) === km);
+  if (!option) {
+    label ||= km < 1 ? `${Number((km * 1000).toPrecision(4))} m` : `${Number(km.toPrecision(4))} km`;
+    option = new Option(label, km);
+    option.dataset.own = '1';
+    el.insertBefore(option, [...el.options].find((o) => o.value === 'custom' || Number(o.value) > km));
+  }
+  el.value = option.value;
+}
+$('print-side').addEventListener('change', () => {
+  const el = $('print-side');
+  if (el.value === 'custom') {
+    el.value = lastSide;
+    $('print-side-field').hidden = false;
+    $('print-side-own').value = el.selectedOptions[0].textContent;
+    $('print-side-own').focus();
+    $('print-side-own').select();
+    return;
+  }
+  $('print-side-field').hidden = !el.selectedOptions[0].dataset.own;
+  $('print-side-hint').hidden = true;
+  sideChanged();
+});
+$('print-side-own').addEventListener('change', () => {
+  const side = core.parseSide($('print-side-own').value, state.units);
+  const hint = $('print-side-hint');
+  hint.hidden = !!side;
+  if (!side) {
+    const [lo, hi] = [core.SIDE_MIN_KM, core.SIDE_MAX_KM].map((km) => core.formatSide(km, state.units));
+    hint.textContent = `A size across reads as a number, in ${distUnit()} or with m, km, ft or mi after it, from ${lo} to ${hi}.`;
+    return;
+  }
+  addSide(side.km, side.label);
+  sideChanged();
+});
 // The slider moves through stops, so x1-x10 keeps its quarter steps beside x50.
 let stretchStops = core.STRETCH_STOPS;
 $('print-exag').max = String(stretchStops.length - 1);
@@ -1213,7 +1257,9 @@ $('print-file').addEventListener('change', async () => {
     return;
   }
   const { centre, set } = saved;
-  choose('print-side', set.sideKm, core.formatSide(set.sideKm, 'metric'));
+  addSide(set.sideKm);
+  lastSide = $('print-side').value;
+  $('print-side-field').hidden = !$('print-side').selectedOptions[0].dataset.own;
   choose('print-width', set.widthMm, `${set.widthMm} mm`);
   choose('print-cells', set.cells, `${set.cells} × ${set.cells}`);
   choose('print-base', set.baseMm, `${set.baseMm} mm`);

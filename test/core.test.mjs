@@ -310,6 +310,26 @@ test('a square side reads in metres or feet when small', () => {
   assert.equal(core.formatSide(500, 'imperial'), '311 mi');
 });
 
+test('a side typed by hand reads in any unit, bare numbers in the units on show', () => {
+  assert.deepEqual(core.parseSide('3.5', 'metric'), { km: 3.5, label: '3.5 km' });
+  assert.deepEqual(core.parseSide(' 800 m ', 'metric'), { km: 0.8, label: '800 m' });
+  assert.deepEqual(core.parseSide('12.5KM', 'imperial'), { km: 12.5, label: '12.5 km' });
+  near(core.parseSide('2', 'imperial').km, 3.218688, 1e-9);
+  assert.equal(core.parseSide('2', 'imperial').label, '2 mi');
+  near(core.parseSide('1,500 ft', 'metric').km, 0.4572, 1e-9);
+  assert.equal(core.parseSide('1,500 ft', 'metric').label, '1,500 ft');
+  assert.equal(core.parseSide('.5', 'metric').km, 0.5);
+});
+
+test('a side typed by hand is refused when it does not read or is out of range', () => {
+  for (const text of ['', 'abc', '-3', '3 yd', '1e3', '3 km 2']) assert.equal(core.parseSide(text, 'metric'), null, text);
+  assert.equal(core.parseSide('40 m', 'metric'), null);
+  assert.equal(core.parseSide('501', 'metric'), null);
+  assert.equal(core.parseSide('500', 'imperial'), null); // 805 km
+  assert.equal(core.parseSide('0', 'metric'), null);
+  assert.equal(core.parseSide('500', 'metric').km, 500);
+});
+
 test('stretch stops run from x1 to x50 and take in a saved value', () => {
   assert.equal(core.STRETCH_STOPS[0], 1);
   assert.equal(core.STRETCH_STOPS.at(-1), 50);

@@ -172,6 +172,7 @@
             <option value="160">160 km</option>
             <option value="200">200 km</option>
             <option value="500">500 km</option>
+            <option value="custom">Your own…</option>
           </select>
         </div>
         <div class="field">
@@ -296,6 +297,11 @@
       </div>
       <p id="print-sea-hint" class="hint" hidden>The sea floor comes from coarser tiles than the land (75 to 150 m per pixel, by latitude), so it prints softer. Lakes print as their flat surface.</p>
       <p id="print-shore-hint" class="hint" hidden>The line runs along the land's edge, one grid point wide, so a finer detail draws a finer line. It follows the coast, not lakeshores, which the tiles hold as flat land.</p>
+      <div id="print-side-field" class="field" hidden>
+        <label for="print-side-own">Your own size across</label>
+        <input id="print-side-own" type="text" inputmode="decimal" autocomplete="off" spellcheck="false">
+      </div>
+      <p id="print-side-hint" class="hint" hidden></p>
       <div id="print-text-field" class="field" hidden>
         <label for="print-text">Your text</label>
         <textarea id="print-text" rows="3" placeholder="Up to 3 lines of 30 letters" spellcheck="false"></textarea>
