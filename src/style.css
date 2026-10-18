@@ -184,6 +184,10 @@ td.none { color: var(--ink-3); }
 
 /* map furniture */
 .leaflet-container { font: 13px var(--f-body); }
+/* the print outline's grips: the dot moves it, the line resizes it */
+.leaflet-interactive.print-dot { cursor: move; }
+.leaflet-interactive.print-edge { cursor: grab; }
+.print-dragging, .print-dragging .leaflet-interactive { cursor: grabbing; }
 .band-label {
   font: 700 13px var(--f-display); letter-spacing: 0.05em; color: #10203a;
   text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff; white-space: nowrap;
