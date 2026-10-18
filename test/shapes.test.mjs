@@ -78,6 +78,20 @@ test('every shape prints as one closed solid, as big as the shape times its heig
   }
 });
 
+test('the strip along a straight side joins near points, so the edge does not stand up like a wall', () => {
+  const n = 200, w = 120, step = w / (n - 1);
+  for (const [shape, opts] of [['rectangle', { aspect: 2, cornerMm: 5 }], ['rectangle', { aspect: 5 }], ['hexagon', {}]]) {
+    const grid = core.shapeCells(core.shapeOutline(shape, w, opts).ring, n, w);
+    const { tris, top } = core.shapeMesh(Array.from({ length: n * n }, (_, k) => 3 + (k % 5) * 0.3), grid);
+    let longest = 0;
+    for (let t = 0; t < top * 3; t += 3) {
+      for (let s = 0; s < 3; s++) longest = Math.max(longest, Math.hypot(tris[t + s][0] - tris[t + (s + 1) % 3][0], tris[t + s][1] - tris[t + (s + 1) % 3][1]));
+    }
+    assert.ok(longest < 3 * step, `${shape} has a top side ${longest.toFixed(1)} mm long`);
+    assert.ok(core.isClosed(tris));
+  }
+});
+
 test('a fine grid closes too, and its STL reads back', () => {
   const n = 200, w = 120;
   const outline = core.shapeOutline('circle', w);

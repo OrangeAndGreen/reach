@@ -1576,7 +1576,62 @@ function triangulate(rings) {
     const middle = [0, 1, 2].map((k) => (pts[a][k] + pts[b][k] + pts[c][k]) / 3);
     for (let s = 0; s < loop.length; s++) out.push(loop[s], loop[(s + 1) % loop.length], middle);
   }
-  return out;
+  // A fan through a long straight side reaches a point far along it: a sliver that skims over the
+  // ground and leaves the outline standing up like a thin wall. Flipping joins near points instead.
+  return delaunayFlips(out);
+}
+
+/**
+ * Triangles (point arrays, three to a triangle, counter-clockwise) with every
+ * side two of them share flipped to the other diagonal of their quadrilateral
+ * while that makes them less thin (Lawson's flips, to a Delaunay
+ * triangulation). The points and the outline stay as they were.
+ */
+function delaunayFlips(tris) {
+  const ids = new Map(), pts = [];
+  const id = (p) => { if (!ids.has(p)) { ids.set(p, pts.length); pts.push(p); } return ids.get(p); };
+  const T = [];
+  for (let t = 0; t < tris.length; t += 3) T.push([id(tris[t]), id(tris[t + 1]), id(tris[t + 2])]);
+  const N = pts.length, key = (u, v) => (u < v ? u * N + v : v * N + u);
+  const sides = new Map(); // side -> the triangles that have it
+  const link = (t) => T[t].forEach((u, k) => {
+    const s = key(u, T[t][(k + 1) % 3]);
+    if (sides.has(s)) sides.get(s).push(t); else sides.set(s, [t]);
+  });
+  const unlink = (t) => T[t].forEach((u, k) => {
+    const list = sides.get(key(u, T[t][(k + 1) % 3]));
+    list.splice(list.indexOf(t), 1);
+  });
+  T.forEach((_, t) => link(t));
+  const orient = (a, b, c) => {
+    const [ax, ay] = pts[a], [bx, by] = pts[b], [cx, cy] = pts[c];
+    const ux = bx - ax, uy = by - ay, vx = cx - ax, vy = cy - ay;
+    return ux * vy - uy * vx > 1e-9 * (ux * ux + uy * uy + vx * vx + vy * vy);
+  };
+  // d inside the circle through a, b and c (counter-clockwise), by more than rounding
+  const inCircle = (a, b, c, d) => {
+    const [dx, dy] = pts[d];
+    const [ax, ay] = [pts[a][0] - dx, pts[a][1] - dy], [bx, by] = [pts[b][0] - dx, pts[b][1] - dy], [cx, cy] = [pts[c][0] - dx, pts[c][1] - dy];
+    const a2 = ax * ax + ay * ay, b2 = bx * bx + by * by, c2 = cx * cx + cy * cy;
+    const det = a2 * (bx * cy - cx * by) - b2 * (ax * cy - cx * ay) + c2 * (ax * by - bx * ay);
+    return det > 1e-9 * (a2 + b2 + c2) ** 2;
+  };
+  const stack = [...sides.keys()];
+  while (stack.length) {
+    const ts = sides.get(stack.pop());
+    if (!ts || ts.length !== 2) continue; // an outline side, or one flipped away
+    const [t1, t2] = ts;
+    // t1 is (a, b, p) and t2 (b, a, q), both counter-clockwise
+    const k = T[t1].findIndex((u) => !T[t2].includes(u));
+    const p = T[t1][k], a = T[t1][(k + 1) % 3], b = T[t1][(k + 2) % 3];
+    const q = T[t2].find((u) => u !== a && u !== b);
+    if (!inCircle(a, b, p, q) || !orient(a, q, p) || !orient(q, b, p)) continue;
+    unlink(t1); unlink(t2);
+    T[t1] = [a, q, p]; T[t2] = [q, b, p];
+    link(t1); link(t2);
+    stack.push(key(a, q), key(q, b), key(b, p), key(p, a));
+  }
+  return T.flatMap((t) => t.map((v) => pts[v]));
 }
 
 /**
