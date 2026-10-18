@@ -15,7 +15,9 @@ Three tools on one map:
   STL for the slicer. It can be a square, a rectangle (3:2 to 5:1), a circle, a
   hexagon, a triangle or a five-pointed star, turned up to 90° either way so its
   top faces any bearing: a 4 km by 0.8 km rectangle turned to 29° lines up with
-  Central Park. On prints of 2 km or less across it can raise the buildings
+  Central Park. On the map, drag the centre dot to move it or the outline to
+  resize it: the shape grows about its centre, a rectangle's side moves alone,
+  and sizes snap to 10 m, 100 m or 1 km as they grow. On prints of 2 km or less across it can raise the buildings
   from OpenStreetMap too. Choose the model width (the shape's width across), the detail, a height stretch and
   the base thickness, and whether the sea floor comes too (down to 50 m, 200 m,
   1,000 m or all the way, with its own depth stretch), and whether to mark the

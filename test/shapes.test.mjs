@@ -233,3 +233,52 @@ test('a label with its north arrow still closes, square or shaped', () => {
     assert.ok(core.isClosed(core.shapeMesh(zMm, core.shapeCells(outline.ring, n, w), [], lab).tris), `${shape} with an arrow is open`);
   }
 });
+
+test('a dragged size snaps to 10 m, 100 m or 1 km, within the sizes a print takes', () => {
+  assert.equal(core.snapSideKm(0.234), 0.23);
+  assert.equal(core.snapSideKm(0.996), 1);
+  assert.equal(core.snapSideKm(3.46), 3.5);
+  assert.equal(core.snapSideKm(27.4), 27);
+  assert.equal(core.snapSideKm(0.01), core.SIDE_MIN_KM);
+  assert.equal(core.snapSideKm(900), core.SIDE_MAX_KM);
+});
+
+test('dragging the outline grows the shape about its centre', () => {
+  const centre = { lat: 44.27, lon: -71.3 };
+  const print = { centre, sideKm: 20, widthMm: 120, bearing: 30, aspect: 2 };
+  const f = core.printFrame(centre, 20, 120, 30);
+  const from = f.toLonLat(120, 60), to = f.toLonLat(150, 60); // half again as far from the centre
+  const grown = core.dragOutline(print, 'outline', from, to);
+  assert.equal(grown.sideKm, 30);
+  assert.equal(grown.centre, centre);
+  assert.equal(core.outlineEdge('hexagon', 120, 2, [120, 60]), 'outline');
+});
+
+test('dragging a rectangle side moves that side alone', () => {
+  const centre = { lat: 40.78, lon: -73.97 };
+  const print = { centre, sideKm: 4, widthMm: 120, bearing: 29, aspect: 2 }; // 4 km by 2 km
+  const f = core.printFrame(centre, 4, 120, 29);
+  assert.equal(core.outlineEdge('rectangle', 120, 2, [119, 70]), 'right');
+  assert.equal(core.outlineEdge('rectangle', 120, 2, [60, 89]), 'top');
+  // the right side 1 km further out: 5 km long, the left side where it was
+  const right = core.dragOutline(print, 'right', f.toLonLat(120, 60), f.toLonLat(150, 70));
+  assert.equal(right.sideKm, 5);
+  near(right.aspect, 2.5, 1e-9);
+  const g = core.printFrame(right.centre, 5, 120, 29);
+  // within 0.01 mm: the frame is even in degrees at its own centre, so moving it bends the ground a hair
+  const [lx, ly] = g.toMm(f.toLonLat(0, 60).lon, f.toLonLat(0, 60).lat);
+  near(lx, 0, 0.01);
+  near(ly, 60, 0.01);
+  // the top side 0.5 km lower: 4 km by 1.5 km, the bottom where it was
+  const top = core.dragOutline(print, 'top', f.toLonLat(60, 90), f.toLonLat(60, 75));
+  assert.equal(top.sideKm, 4);
+  near(top.aspect, 4 / 1.5, 1e-9);
+  const t = core.printFrame(top.centre, 4, 120, 29);
+  const bottom = f.toLonLat(60, 30);
+  const [bx, by] = t.toMm(bottom.lon, bottom.lat);
+  near(bx, 60, 0.01);
+  near(by, 60 - 120 / top.aspect / 2, 0.01);
+  // a short side can't pass the long one, nor a long side make it more than 5 to 1
+  near(core.dragOutline(print, 'bottom', f.toLonLat(60, 30), f.toLonLat(60, -100)).aspect, core.ASPECT_MIN, 1e-9);
+  near(core.dragOutline(print, 'left', f.toLonLat(0, 60), f.toLonLat(-400, 60)).aspect, core.ASPECT_MAX, 1e-9);
+});

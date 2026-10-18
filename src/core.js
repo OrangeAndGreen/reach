@@ -585,6 +585,64 @@ export function parseSide(text, units) {
   return { km, label: `${Number(value.toPrecision(4)).toLocaleString('en-US')} ${unit}` };
 }
 
+/**
+ * A size dragged on the map, rounded to a step that suits it: 10 m under
+ * 1 km, 100 m under 10 km and 1 km above, within SIDE_MIN_KM to SIDE_MAX_KM.
+ */
+export function snapSideKm(km) {
+  const step = km < 1 ? 0.01 : km < 10 ? 0.1 : 1;
+  return Math.min(SIDE_MAX_KM, Math.max(SIDE_MIN_KM, Number((Math.round(km / step) * step).toPrecision(6))));
+}
+
+/** The squarest and longest a rectangle dragged on the map gets, long side over short. */
+export const ASPECT_MIN = 1;
+export const ASPECT_MAX = 5;
+
+/**
+ * Which part of a print's outline a press at model point [x, y] (mm) takes
+ * hold of: a rectangle's nearest side ('left', 'right', 'bottom' or 'top'),
+ * or 'outline' for a shape that grows and shrinks about its centre.
+ */
+export function outlineEdge(shape, widthMm, aspect, [x, y]) {
+  if (shape !== 'rectangle') return 'outline';
+  const c = widthMm / 2, h = widthMm / aspect;
+  const gaps = { left: Math.abs(x), right: Math.abs(x - widthMm), bottom: Math.abs(y - (c - h / 2)), top: Math.abs(y - (c + h / 2)) };
+  return Object.keys(gaps).reduce((a, b) => (gaps[b] < gaps[a] ? b : a));
+}
+
+/**
+ * A print reshaped by dragging its outline (taken hold of at edge, from
+ * outlineEdge) from one {lat, lon} to another. print is { centre, sideKm,
+ * widthMm, bearing, aspect }. The whole outline scales about the centre by
+ * how much farther from it the pointer now is. A rectangle's side moves alone
+ * and its opposite side stays put, so the centre moves half as far, and
+ * moving a short side changes the aspect instead of the size across. Sizes
+ * snap with snapSideKm and the aspect stays within ASPECT_MIN to ASPECT_MAX.
+ * Returns { centre, sideKm, aspect }.
+ */
+export function dragOutline(print, edge, from, to) {
+  const { centre, sideKm, widthMm, bearing = 0, aspect = 2 } = print;
+  const frame = printFrame(centre, sideKm, widthMm, bearing);
+  const kmPerMm = sideKm / widthMm, c = widthMm / 2;
+  const [x0, y0] = frame.toMm(from.lon, from.lat), [x, y] = frame.toMm(to.lon, to.lat);
+  if (edge === 'outline') {
+    const r0 = Math.hypot(x0 - c, y0 - c);
+    return { centre, sideKm: r0 > 0 ? snapSideKm((sideKm * Math.hypot(x - c, y - c)) / r0) : sideKm, aspect };
+  }
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  const at = (mx, my) => { const p = frame.toLonLat(mx, my); return { lat: p.lat, lon: p.lon }; };
+  if (edge === 'left' || edge === 'right') {
+    const shortKm = sideKm / aspect, sign = edge === 'right' ? 1 : -1;
+    const longKm = clamp(snapSideKm((widthMm + sign * (x - x0)) * kmPerMm), Math.max(SIDE_MIN_KM, shortKm * ASPECT_MIN), Math.min(SIDE_MAX_KM, shortKm * ASPECT_MAX));
+    const half = longKm / kmPerMm / 2;
+    return { centre: at(edge === 'right' ? half : widthMm - half, c), sideKm: longKm, aspect: longKm / shortKm };
+  }
+  const h = widthMm / aspect, sign = edge === 'top' ? 1 : -1;
+  const shortKm = clamp(snapSideKm((h + sign * (y - y0)) * kmPerMm), sideKm / ASPECT_MAX, sideKm / ASPECT_MIN);
+  const half = shortKm / kmPerMm / 2;
+  return { centre: at(c, edge === 'top' ? c - h / 2 + half : c + h / 2 - half), sideKm, aspect: sideKm / shortKm };
+}
+
 const steps = (from, to, by) => Array.from({ length: Math.round((to - from) / by) + 1 }, (_, i) => from + i * by);
 /**
  * The height stretch slider's stops: quarter steps up to x10, where most prints

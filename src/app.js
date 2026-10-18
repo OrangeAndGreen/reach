@@ -81,6 +81,7 @@ const driveLayer = L.layerGroup();
 const printLayer = L.layerGroup();
 
 map.on('click', async (e) => {
+  if (justDragged) return;
   const lat = e.latlng.lat;
   const lon = ((e.latlng.lng + 540) % 360) - 180;
   const name = await placeName(lat, lon);
@@ -711,32 +712,128 @@ function shoreSetting(value) {
   return { shoreMm: Number(size) || 0, shoreRidge: style === 'ridge' };
 }
 
-function setPrintCentre(place) {
+function setPrintCentre(place, fit = true) {
   state.print = place;
   saveSettings();
-  drawPrintSquare(true);
+  drawPrintSquare(fit);
   buildModel();
 }
 
 /** The print's outline on the map, as Leaflet lat/lngs: the shape, turned. */
-function printOutline(set) {
-  const frame = core.printFrame(state.print, set.sideKm, set.widthMm, set.bearing);
+function printOutline(set, centre) {
+  const frame = core.printFrame(centre, set.sideKm, set.widthMm, set.bearing);
   const { ring } = core.shapeOutline(set.shape, set.widthMm, { aspect: set.aspect, cornerMm: set.shape === 'square' ? 0 : set.cornerMm });
   return ring.map(([x, y]) => { const p = frame.toLonLat(x, y); return [p.lat, p.lon]; });
 }
 
 function drawPrintSquare(fit) {
   printLayer.clearLayers();
-  $('print-name').textContent = `Centred on ${state.print.name}.`;
-  const outline = printOutline(printSettings());
+  // While the outline is dragged it shows where it would go, and how big.
+  const set = { ...printSettings(), ...drag?.now };
+  const centre = drag?.now?.centre || state.print;
+  $('print-name').textContent = !drag?.now ? `Centred on ${state.print.name}.`
+    : set.shape === 'rectangle' ? `${core.formatSide(set.sideKm, state.units)} × ${core.formatSide(set.sideKm / set.aspect, state.units)}`
+    : `${core.formatSide(set.sideKm, state.units)} across`;
+  const outline = printOutline(set, centre);
   // A white casing under the line keeps the outline readable over busy city maps.
   L.polygon(outline, { color: '#ffffff', weight: 7, opacity: 0.9, fill: false, interactive: false }).addTo(printLayer);
   const rect = L.polygon(outline, { color: cssVar('--accent'), weight: 3, fill: true, fillOpacity: 0.06, interactive: false });
   rect.addTo(printLayer);
-  // The centre, so a small nudge is a click just beside it. Not interactive: a click on it still re-centres.
-  L.circleMarker([state.print.lat, state.print.lon], { radius: 5, color: '#fff', weight: 2, fillColor: cssVar('--accent'), fillOpacity: 1, interactive: false })
+  L.circleMarker([centre.lat, centre.lon], { radius: 5, color: '#fff', weight: 2, fillColor: cssVar('--accent'), fillOpacity: 1, interactive: false })
     .addTo(printLayer);
+  // Wider, unseen grips over the line and the dot, so a finger can take hold of them.
+  const edge = L.polygon(outline, { opacity: 0, weight: 18, fill: false, className: 'print-grip print-edge' }).addTo(printLayer);
+  edge.getElement().addEventListener('pointerdown', (e) => startDrag(e, false));
+  const dot = L.circleMarker([centre.lat, centre.lon], { radius: 14, opacity: 0, fillOpacity: 0, className: 'print-grip print-dot' }).addTo(printLayer);
+  dot.getElement().addEventListener('pointerdown', (e) => startDrag(e, true));
   if (fit) map.fitBounds(rect.getBounds().pad(0.6));
+}
+
+// ---------- dragging the outline ----------
+// The centre dot moves the whole print. The outline resizes it about its
+// centre, except a rectangle, whose side moves alone. Sizes snap (core.snapSideKm),
+// and the model is built once the pointer lets go.
+
+let drag = null; // { edge, start, from, print, now } while the outline is held
+let justDragged = false; // swallows the click that ends a drag, so it doesn't re-centre the print
+
+function startDrag(e, centreDot) {
+  if (e.button > 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  map.dragging.disable();
+  const set = printSettings();
+  const at = map.mouseEventToLatLng(e);
+  const from = { lat: at.lat, lon: at.lng };
+  const print = { centre: state.print, sideKm: set.sideKm, widthMm: set.widthMm, bearing: set.bearing, aspect: set.aspect };
+  const edge = centreDot ? 'centre'
+    : core.outlineEdge(set.shape, set.widthMm, set.aspect, core.printFrame(state.print, set.sideKm, set.widthMm, set.bearing).toMm(from.lon, from.lat));
+  drag = { edge, start: map.mouseEventToContainerPoint(e), from, print, now: null };
+  map.getContainer().classList.add('print-dragging');
+  document.addEventListener('pointermove', moveDrag);
+  document.addEventListener('pointerup', endDrag);
+  document.addEventListener('pointercancel', endDrag);
+}
+
+function moveDrag(e) {
+  // A press that wanders a few pixels is still a tap, not a drag.
+  if (!drag.now && map.mouseEventToContainerPoint(e).distanceTo(drag.start) < 4) return;
+  const at = map.mouseEventToLatLng(e);
+  const to = { lat: at.lat, lon: at.lng };
+  const { print, from } = drag;
+  drag.now = drag.edge === 'centre'
+    ? { centre: { lat: Math.max(-85, Math.min(85, print.centre.lat + to.lat - from.lat)), lon: print.centre.lon + to.lon - from.lon } }
+    : core.dragOutline(print, drag.edge, from, to);
+  drawPrintSquare(false);
+}
+
+function endDrag() {
+  document.removeEventListener('pointermove', moveDrag);
+  document.removeEventListener('pointerup', endDrag);
+  document.removeEventListener('pointercancel', endDrag);
+  map.getContainer().classList.remove('print-dragging');
+  map.dragging.enable();
+  const { now, print } = drag;
+  drag = null;
+  if (!now) return;
+  justDragged = true;
+  setTimeout(() => { justDragged = false; }, 0);
+  const set = printSettings();
+  if (now.sideKm && now.sideKm !== set.sideKm) {
+    addSide(now.sideKm, null, true);
+    lastSide = $('print-side').value;
+    $('print-side-field').hidden = true;
+    showBuildingControls();
+  }
+  if (now.aspect && now.aspect !== set.aspect) addAspect(now.aspect);
+  if (now.centre === print.centre) {
+    drawPrintSquare(false);
+    buildModel();
+    return;
+  }
+  const lat = now.centre.lat, lon = ((now.centre.lon + 540) % 360) - 180;
+  const place = { name: `${lat.toFixed(3)}, ${lon.toFixed(3)}`, lat, lon };
+  setPrintCentre(place, false);
+  // The name follows when the lookup answers, unless the print has moved on by then.
+  placeName(lat, lon).then((name) => {
+    if (state.print !== place) return;
+    place.name = name;
+    saveSettings();
+    if (!drag) $('print-name').textContent = `Centred on ${name}.`;
+  });
+}
+
+/** Chooses a rectangle's aspect dragged on the map, which replaces the last one dragged in the list. */
+function addAspect(aspect) {
+  const el = $('print-aspect');
+  for (const o of [...el.options]) if (o.dataset.dragged && Number(o.value) !== aspect) o.remove();
+  let option = [...el.options].find((o) => Number(o.value) === aspect);
+  if (!option) {
+    option = new Option(`${Number(aspect.toFixed(2))} : 1`, aspect);
+    option.dataset.dragged = '1';
+    el.insertBefore(option, [...el.options].find((o) => Number(o.value) > aspect));
+  }
+  el.value = option.value;
 }
 
 /** Elevation at fractional global pixel coordinates, bilinear across tile edges. */
@@ -903,13 +1000,15 @@ function sideChanged() {
   showBuildingControls();
   buildModel();
 }
-function addSide(km, label) {
+function addSide(km, label, dragged) {
   const el = $('print-side');
+  // A size dragged on the map replaces the last one dragged, so drags don't pile up in the list.
+  if (dragged) for (const o of [...el.options]) if (o.dataset.dragged && Number(o.value) !== km) o.remove();
   let option = [...el.options].find((o) => Number(o.value) === km);
   if (!option) {
     label ||= km < 1 ? `${Number((km * 1000).toPrecision(4))} m` : `${Number(km.toPrecision(4))} km`;
     option = new Option(label, km);
-    option.dataset.own = '1';
+    option.dataset[dragged ? 'dragged' : 'own'] = '1';
     el.insertBefore(option, [...el.options].find((o) => o.value === 'custom' || Number(o.value) > km));
   }
   el.value = option.value;
