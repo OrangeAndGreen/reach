@@ -114,6 +114,7 @@ function setTab(tab) {
   for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
   for (const t of ['height', 'drive', 'print']) $(`pane-${t}`).hidden = tab !== t;
   for (const layer of [heightLayer, hoverLayer, driveLayer, printLayer]) map.removeLayer(layer);
+  if (tab !== 'print') setPreviewBig(false);
   if (tab === 'height') {
     heightLayer.addTo(map);
     hoverLayer.addTo(map);
@@ -1171,6 +1172,24 @@ function showBuildingControls() {
 $('print-buildings').addEventListener('change', () => { showBuildingControls(); buildModel(); });
 showBuildingControls();
 
+// Enlarged, the preview moves into the map's place (the whole screen on a phone),
+// and the settings stay beside it. Its ResizeObserver sizes the view to fit.
+const previewHome = $('print-preview').parentElement;
+function setPreviewBig(big) {
+  const el = $('print-preview');
+  if (big === el.classList.contains('big')) return;
+  el.classList.toggle('big', big);
+  (big ? document.querySelector('.map-wrap') : previewHome).append(el);
+  const b = $('print-preview-size');
+  const what = big ? 'Put the map back' : 'Enlarge the preview';
+  b.setAttribute('aria-pressed', String(big));
+  b.setAttribute('aria-label', what);
+  b.title = what;
+  $('print-preview-hint').textContent = big ? '(in place of the map: Esc puts it back)' : '(drag to turn, scroll to zoom)';
+}
+$('print-preview-size').addEventListener('click', () => setPreviewBig(!$('print-preview').classList.contains('big')));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setPreviewBig(false); });
+
 let viewer = null;
 function showModel() {
   const m = state.model;
@@ -1183,8 +1202,7 @@ function showModel() {
   if (!viewer) {
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(2, devicePixelRatio));
-    el.innerHTML = '';
-    el.append(renderer.domElement);
+    el.prepend(renderer.domElement);
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(35, 1, 1, 5000);
     scene.add(new THREE.HemisphereLight(0xffffff, 0x445544, 0.55));

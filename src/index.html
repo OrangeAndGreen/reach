@@ -312,8 +312,13 @@
       <div id="print-status" class="status" aria-live="polite"></div>
 
       <figure class="chart-wrap">
-        <figcaption>Preview <span class="hint">(drag to turn, scroll to zoom)</span></figcaption>
-        <div id="print-preview" class="preview"></div>
+        <figcaption>Preview <span id="print-preview-hint" class="hint">(drag to turn, scroll to zoom)</span></figcaption>
+        <div id="print-preview" class="preview">
+          <button id="print-preview-size" class="preview-size" type="button" aria-pressed="false" aria-label="Enlarge the preview" title="Enlarge the preview">
+            <svg class="grow" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/></svg>
+            <svg class="shrink" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10h-6V4M4 14h6v6M14 10l7-7M10 14l-7 7"/></svg>
+          </button>
+        </div>
       </figure>
       <div class="table-wrap">
         <table id="print-table"></table>

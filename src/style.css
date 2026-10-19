@@ -171,6 +171,16 @@ button.primary:disabled { opacity: 0.55; cursor: progress; }
 .preview { position: relative; height: 300px; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; background: var(--paper); }
 .preview canvas { display: block; width: 100% !important; height: 100% !important; touch-action: none; }
 .preview .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--ink-3); font-size: 13px; }
+/* enlarged, the preview sits in the map's place, above Leaflet's controls */
+.preview.big { position: absolute; inset: 0; height: auto; border: 0; border-radius: 0; z-index: 1001; }
+.preview-size {
+  position: absolute; top: 8px; right: 8px; display: grid; place-items: center; width: 32px; height: 32px; padding: 0;
+  background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; color: var(--ink-2); cursor: pointer;
+}
+.preview-size:hover { color: var(--ink); }
+.preview-size svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.preview .shrink, .preview.big .grow { display: none; }
+.preview.big .shrink { display: block; }
 input[type="range"] { padding: 0; accent-color: var(--accent); }
 
 .table-wrap { overflow-x: auto; }
@@ -205,6 +215,7 @@ td.none { color: var(--ink-3); }
   .layout { grid-template-columns: 1fr; grid-template-rows: 40% 1fr; }
   .panel { border-right: 0; border-top: 1px solid var(--rule); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-bottom: max(32px, env(safe-area-inset-bottom, 0px)); }
   .map-wrap { order: -1; }
+  .preview.big { position: fixed; } /* the map's 40% is too small: take the whole screen */
   .units { margin-left: 0; }
 }
 @media (prefers-reduced-motion: reduce) { .progress > div { transition: none; } }
