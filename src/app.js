@@ -80,6 +80,9 @@ const hoverLayer = L.layerGroup().addTo(map);
 const driveLayer = L.layerGroup();
 const printLayer = L.layerGroup();
 
+// The print's step arrows sit a fixed few pixels outside it, whatever the zoom.
+map.on('zoomend', () => { if (state.tab === 'print' && !drag) drawPrintSquare(false); });
+
 map.on('click', async (e) => {
   if (justDragged) return;
   const lat = e.latlng.lat;
@@ -746,7 +749,47 @@ function drawPrintSquare(fit) {
   edge.getElement().addEventListener('pointerdown', (e) => startDrag(e, false));
   const dot = L.circleMarker([centre.lat, centre.lon], { radius: 14, opacity: 0, fillOpacity: 0, className: 'print-grip print-dot' }).addTo(printLayer);
   dot.getElement().addEventListener('pointerdown', (e) => startDrag(e, true));
+  if (!drag && (set.shape === 'square' || set.shape === 'rectangle')) drawStepArrows(set, centre);
   if (fit) map.fitBounds(rect.getBounds().pad(0.6));
+}
+
+// ---------- stepping the print one over ----------
+// An arrow just outside each side of a square or rectangle moves the print
+// one whole shape across that side, so the two print to sit edge to edge.
+
+const STEP_GAP_PX = 22; // how far outside the side its arrow sits
+const STEP_NAMES = { left: 'left', right: 'right', top: 'up', bottom: 'down' };
+
+function drawStepArrows(set, centre) {
+  const frame = core.printFrame(centre, set.sideKm, set.widthMm, set.bearing);
+  const c = set.widthMm / 2, h = set.shape === 'rectangle' ? set.widthMm / set.aspect : set.widthMm;
+  const mids = { left: [0, c], right: [set.widthMm, c], top: [c, c + h / 2], bottom: [c, c - h / 2] };
+  const middle = map.latLngToContainerPoint([centre.lat, centre.lon]);
+  for (const [side, [x, y]] of Object.entries(mids)) {
+    const p = frame.toLonLat(x, y);
+    const at = map.latLngToContainerPoint([p.lat, p.lon]);
+    const out = at.subtract(middle);
+    const len = out.distanceTo(L.point(0, 0)) || 1;
+    const spot = map.containerPointToLatLng(at.add(out.multiplyBy(STEP_GAP_PX / len)));
+    const turn = (Math.atan2(out.y, out.x) * 180) / Math.PI;
+    const icon = L.divIcon({
+      className: 'print-step', iconSize: [28, 28],
+      html: `<svg viewBox="0 0 24 24" style="transform: rotate(${turn}deg)"><path d="M9 5l7 7-7 7"/></svg>`,
+    });
+    L.marker(spot, { icon, title: `Move the print one over, ${STEP_NAMES[side]}`, alt: `Move the print one over, ${STEP_NAMES[side]}` })
+      .on('click', () => stepPrint(side))
+      .addTo(printLayer);
+  }
+}
+
+function stepPrint(side) {
+  const set = printSettings();
+  const next = core.neighbourCentre({ centre: state.print, sideKm: set.sideKm, widthMm: set.widthMm, bearing: set.bearing, aspect: set.aspect }, set.shape, side);
+  // When the print steps out of view the map follows it as far, so the arrow stays under the pointer.
+  const shift = map.latLngToContainerPoint([next.lat, next.lon]).subtract(map.latLngToContainerPoint([state.print.lat, state.print.lon]));
+  const seen = map.getBounds().contains(L.latLngBounds(printOutline(set, next)));
+  movePrint(next);
+  if (!seen) map.panBy(shift);
 }
 
 // ---------- dragging the outline ----------
@@ -811,7 +854,12 @@ function endDrag() {
     buildModel();
     return;
   }
-  const lat = now.centre.lat, lon = ((now.centre.lon + 540) % 360) - 180;
+  movePrint(now.centre);
+}
+
+/** Centres the print on a point moved to on the map, named once the lookup answers. */
+function movePrint(centre) {
+  const lat = centre.lat, lon = ((centre.lon + 540) % 360) - 180;
   const place = { name: `${lat.toFixed(3)}, ${lon.toFixed(3)}`, lat, lon };
   setPrintCentre(place, false);
   // The name follows when the lookup answers, unless the print has moved on by then.

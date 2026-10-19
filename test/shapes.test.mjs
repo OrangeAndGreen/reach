@@ -296,3 +296,38 @@ test('dragging a rectangle side moves that side alone', () => {
   near(core.dragOutline(print, 'bottom', f.toLonLat(60, 30), f.toLonLat(60, -100)).aspect, core.ASPECT_MIN, 1e-9);
   near(core.dragOutline(print, 'left', f.toLonLat(0, 60), f.toLonLat(-400, 60)).aspect, core.ASPECT_MAX, 1e-9);
 });
+
+test('a print steps one over to sit edge to edge with the last', () => {
+  const centre = { lat: 46.5, lon: 8.1 };
+  for (const [shape, aspect] of [['square', 2], ['rectangle', 2.5]]) {
+    const print = { centre, sideKm: 6, widthMm: 120, bearing: 20, aspect };
+    const f = core.printFrame(centre, 6, 120, 20);
+    const h = shape === 'rectangle' ? 120 / aspect : 120, lo = 60 - h / 2, hi = 60 + h / 2;
+    // each side's two corners, on this print and on the one stepped to across it
+    const sides = {
+      right: [[[120, lo], [120, hi]], [[0, lo], [0, hi]]],
+      left: [[[0, lo], [0, hi]], [[120, lo], [120, hi]]],
+      top: [[[0, hi], [120, hi]], [[0, lo], [120, lo]]],
+      bottom: [[[0, lo], [120, lo]], [[0, hi], [120, hi]]],
+    };
+    for (const [side, [mine, theirs]] of Object.entries(sides)) {
+      const next = core.neighbourCentre(print, shape, side);
+      const g = core.printFrame(next, 6, 120, 20);
+      // the stepped print is a whole shape away, not overlapping and not apart
+      near(core.haversineKm(centre, next), side === 'left' || side === 'right' ? 6 : (6 * h) / 120, 0.01);
+      // the middle of the shared side lands in the same place from both; its
+      // corners within 0.07 mm: a frame is even in degrees at its own centre, so
+      // they drift about 0.01 mm per km of print
+      for (let k = 0; k < 2; k++) {
+        const p = f.toLonLat(...mine[k]);
+        const [x, y] = g.toMm(p.lon, p.lat);
+        near(x, theirs[k][0], 0.07);
+        near(y, theirs[k][1], 0.07);
+      }
+      const m = f.toLonLat((mine[0][0] + mine[1][0]) / 2, (mine[0][1] + mine[1][1]) / 2);
+      const [mx, my] = g.toMm(m.lon, m.lat);
+      near(mx, (theirs[0][0] + theirs[1][0]) / 2, 1e-6);
+      near(my, (theirs[0][1] + theirs[1][1]) / 2, 1e-6);
+    }
+  }
+});

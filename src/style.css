@@ -188,6 +188,10 @@ td.none { color: var(--ink-3); }
 .leaflet-interactive.print-dot { cursor: move; }
 .leaflet-interactive.print-edge { cursor: grab; }
 .print-dragging, .print-dragging .leaflet-interactive { cursor: grabbing; }
+/* the arrows outside a square or rectangle that step it one over */
+.print-step { display: grid; place-items: center; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px #fff, 0 1px 4px rgba(0, 0, 0, 0.35); cursor: pointer; }
+.print-step svg { width: 18px; height: 18px; fill: none; stroke: var(--accent-ink); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.print-step:hover { filter: brightness(1.15); }
 .band-label {
   font: 700 13px var(--f-display); letter-spacing: 0.05em; color: #10203a;
   text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff; white-space: nowrap;

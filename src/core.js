@@ -643,6 +643,28 @@ export function dragOutline(print, edge, from, to) {
   return { centre: at(c, edge === 'top' ? c - h / 2 + half : c + h / 2 - half), sideKm, aspect: sideKm / shortKm };
 }
 
+/**
+ * The centre of the print one over from print ({ centre, sideKm, widthMm,
+ * bearing, aspect }) across its side ('left', 'right', 'bottom' or 'top' of
+ * the model), so the two share that side and print to sit edge to edge. A
+ * rectangle steps by its long side across and its short side up and down.
+ * Each frame is even in degrees at its own centre, so the step is solved for
+ * the shared side's middle to land in the same place from both prints.
+ */
+export function neighbourCentre(print, shape, side) {
+  const { centre, sideKm, widthMm, bearing = 0, aspect = 2 } = print;
+  const c = widthMm / 2, h = shape === 'rectangle' ? widthMm / aspect : widthMm;
+  const [dx, dy] = { left: [-widthMm, 0], right: [widthMm, 0], bottom: [0, -h], top: [0, h] }[side];
+  const f = printFrame(centre, sideKm, widthMm, bearing);
+  const meet = f.toLonLat(c + dx / 2, c + dy / 2);
+  let next = f.toLonLat(c + dx, c + dy);
+  for (let k = 0; k < 4; k++) {
+    const p = printFrame(next, sideKm, widthMm, bearing).toLonLat(c - dx / 2, c - dy / 2);
+    next = { lat: next.lat + meet.lat - p.lat, lon: next.lon + meet.lon - p.lon };
+  }
+  return next;
+}
+
 const steps = (from, to, by) => Array.from({ length: Math.round((to - from) / by) + 1 }, (_, i) => from + i * by);
 /**
  * The height stretch slider's stops: quarter steps up to x10, where most prints
