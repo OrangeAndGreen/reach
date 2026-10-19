@@ -1545,6 +1545,19 @@ $('print-map').addEventListener('click', async () => {
     ctx.setTransform(new DOMMatrix([(u[0] - o[0]) / w, (u[1] - o[1]) / w, (v[0] - o[0]) / h, (v[1] - o[1]) / h, o[0], o[1]]).inverse());
     ctx.drawImage(tiles, 0, 0);
     ctx.restore();
+    // A set of pieces shows where it splits, dashed like the outline's seams on the map.
+    if (plan.pieces.length > 1) {
+      const pw = (set.widthMm / W) * w, ph = h / set.rows;
+      ctx.save();
+      ctx.strokeStyle = cssVar('--accent');
+      ctx.lineWidth = Math.max(2, Math.round(w / 500));
+      ctx.setLineDash([ctx.lineWidth * 4, ctx.lineWidth * 4]);
+      ctx.beginPath();
+      for (let c = 1; c < set.cols; c++) { ctx.moveTo(c * pw, 0); ctx.lineTo(c * pw, h); }
+      for (let r = 1; r < set.rows; r++) { ctx.moveTo(0, r * ph); ctx.lineTo(w, r * ph); }
+      ctx.stroke();
+      ctx.restore();
+    }
     // The tiles' licence asks for the credit on the image.
     const credit = layer.options.credit;
     ctx.font = `${Math.max(11, Math.round(w / 110))}px sans-serif`;

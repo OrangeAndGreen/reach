@@ -861,8 +861,9 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
   const inputs = [
     ['reachFormat', 'Reach print format', PRINT_FORMAT],
     ['centreName', 'Centre', centre.name],
-    ['centreLat', 'Centre latitude', centre.lat.toFixed(6)],
-    ['centreLon', 'Centre longitude', centre.lon.toFixed(6)],
+    // in full, so the file rebuilds the grid on the very same points
+    ['centreLat', 'Centre latitude', String(centre.lat)],
+    ['centreLon', 'Centre longitude', String(centre.lon)],
     ['squareKm', 'Square side (km)', set.sideKm],
     ['modelWidthMm', 'Model width (mm)', set.widthMm],
     ['gridCells', 'Detail (grid points per side)', set.cells],
@@ -944,11 +945,19 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
   const outline = setRing || shapeOutline(shape, set.widthMm, { aspect: set.aspect, cornerMm: shape === 'square' ? 0 : set.cornerMm }).ring;
   const ring = [...outline, outline[0]].filter((_, k, all) => all.length < 200 || k % 10 === 0 || k === all.length - 1)
     .map(([x, y]) => { const p = frame.toLonLat(x, y); return [p.lon, p.lat]; });
+  // A set of pieces adds each piece's own outline, named as its label names it.
+  const w = set.widthMm;
+  const piecePlacemarks = plan ? plan.pieces.map((p) => {
+    const corners = [[0, 0], [w, 0], [w, w], [0, w], [0, 0]].map(([x, y]) => { const g = p.frame.toLonLat(x, y); return [g.lon, g.lat]; });
+    return `  <Placemark><name>Piece ${p.name}</name><styleUrl>#piece</styleUrl><Polygon><tessellate>1</tessellate><outerBoundaryIs><LinearRing><coordinates>${coordText(corners)}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>
+`;
+  }).join('') : '';
   return `<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
   <name>${escapeXml(`Reach print: ${centre.name}, ${set.sideKm} km`)}</name>
-  <Style id="square"><LineStyle><color>ff24548f</color><width>3</width></LineStyle><PolyStyle><color>2224548f</color></PolyStyle></Style>
+  <Style id="square"><LineStyle><color>ff24548f</color><width>3</width></LineStyle><PolyStyle><color>2224548f</color></PolyStyle></Style>${plan ? `
+  <Style id="piece"><LineStyle><color>ff24548f</color><width>1.5</width></LineStyle><PolyStyle><fill>0</fill></PolyStyle></Style>` : ''}
   <Placemark id="reach-print">
     <name>${escapeXml(`${set.sideKm} km print area`)}</name>
     <description>${description}${tables}</description>
@@ -959,7 +968,7 @@ ${data(derived)}
     </ExtendedData>
     <Polygon><tessellate>1</tessellate><outerBoundaryIs><LinearRing><coordinates>${coordText(ring)}</coordinates></LinearRing></outerBoundaryIs></Polygon>
   </Placemark>
-  <Placemark><name>${escapeXml(centre.name)}</name><Point><coordinates>${centre.lon.toFixed(6)},${centre.lat.toFixed(6)},0</coordinates></Point></Placemark>
+${piecePlacemarks}  <Placemark><name>${escapeXml(centre.name)}</name><Point><coordinates>${centre.lon.toFixed(6)},${centre.lat.toFixed(6)},0</coordinates></Point></Placemark>
 </Document>
 </kml>
 `;

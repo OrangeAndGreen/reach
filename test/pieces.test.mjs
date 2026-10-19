@@ -155,3 +155,19 @@ test('a resampled grid keeps a plane, its corners, and the side it shares', () =
   }
   assert.equal(core.resampleGrid(plane, n, n), plane);
 });
+
+test('a KML of pieces outlines each one, and keeps the centre to the last digit', () => {
+  const exact = { name: 'Somewhere', lat: 44.27063418529731, lon: -71.30331937210984 };
+  const set = { sideKm: 30, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 2, baseMm: 3, cols: 3, rows: 2 };
+  const kml = core.printKml({ centre: exact, set });
+  const names = [...kml.matchAll(/<Placemark><name>(Piece [A-C]\d)<\/name>/g)].map((m) => m[1]);
+  assert.deepEqual(names, ['Piece A1', 'Piece A2', 'Piece A3', 'Piece B1', 'Piece B2', 'Piece B3']);
+  assert.equal((kml.match(/<Placemark/g) || []).length, 8);
+  // A1's north-west corner is the set's
+  const a1 = kml.match(/<name>Piece A1<\/name>[\s\S]*?<coordinates>([^<]+)</)[1].trim().split(' ');
+  const nw = core.piecePlan(exact, set).pieces[0].frame.toLonLat(0, 120);
+  assert.equal(a1[3], `${nw.lon.toFixed(5)},${nw.lat.toFixed(5)},0`);
+  assert.deepEqual(core.parsePrintKml(kml).centre, exact);
+  // one piece has no piece outlines
+  assert.doesNotMatch(core.printKml({ centre: exact, set: { ...set, cols: 1, rows: 1 } }), /<name>Piece /);
+});
