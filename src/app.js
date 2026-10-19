@@ -689,10 +689,12 @@ $('drive-kml').addEventListener('click', () => {
 // ---------- print tool ----------
 
 function printSettings() {
+  const widthMm = Number($('print-width').value), pitchMm = Number($('print-pitch').value);
   return {
     sideKm: Number($('print-side').value),
-    widthMm: Number($('print-width').value),
-    cells: Number($('print-cells').value),
+    widthMm,
+    cells: core.gridCells(widthMm, pitchMm),
+    pitchMm,
     exaggeration: stretch(),
     baseMm: Number($('print-base').value),
     seaFloorM: Number($('print-sea').value),
@@ -1099,9 +1101,20 @@ function setStretch(value) {
 }
 $('print-exag').addEventListener('input', () => { $('print-exag-value').textContent = `× ${stretch()}`; });
 $('print-exag').addEventListener('change', buildModel);
-for (const id of ['print-cells', 'print-base', 'print-default']) $(id).addEventListener('change', buildModel);
+for (const id of ['print-pitch', 'print-base', 'print-default']) $(id).addEventListener('change', buildModel);
+
+/** Names each detail with the grid it makes at the chosen width. */
+function labelPitches() {
+  const widthMm = Number($('print-width').value);
+  for (const o of $('print-pitch').options) {
+    if (!o.dataset.name) continue;
+    const n = core.gridCells(widthMm, Number(o.value));
+    o.textContent = `${o.dataset.name}, ${o.value} mm (${n} × ${n})`;
+  }
+}
+labelPitches();
 // The width sets the corner radius against the outline, so the map's outline follows it.
-$('print-width').addEventListener('change', () => { drawPrintSquare(false); buildModel(); });
+$('print-width').addEventListener('change', () => { labelPitches(); drawPrintSquare(false); buildModel(); });
 $('print-shore').addEventListener('change', () => { $('print-shore-hint').hidden = $('print-shore').value === '0'; buildModel(); });
 $('print-label').addEventListener('change', () => { showLabelControls(); buildModel(); });
 $('print-text').addEventListener('input', showLabelControls);
@@ -1408,7 +1421,10 @@ $('print-file').addEventListener('change', async () => {
   lastSide = $('print-side').value;
   $('print-side-field').hidden = !$('print-side').selectedOptions[0].dataset.own;
   choose('print-width', set.widthMm, `${set.widthMm} mm`);
-  choose('print-cells', set.cells, `${set.cells} × ${set.cells}`);
+  labelPitches();
+  // A file whose count no detail here makes keeps it, as the pitch that makes exactly that count.
+  const pitch = core.gridCells(set.widthMm, set.pitchMm) === set.cells ? set.pitchMm : set.widthMm / (set.cells - 1);
+  choose('print-pitch', pitch, `${set.cells} × ${set.cells}, from the file`);
   choose('print-base', set.baseMm, `${set.baseMm} mm`);
   setStretch(set.exaggeration);
   choose('print-sea', set.seaFloorM, `Down to ${core.formatHeight(set.seaFloorM, state.units)}`);

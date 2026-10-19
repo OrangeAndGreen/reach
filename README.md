@@ -90,8 +90,13 @@ ES modules, which is why it needs the little server rather than file://.
   the grid. Detail is about one grid step, so a Quick 12-hour run is accurate
   to about 75 km.
 - **Print** samples the terrain bilinearly on an n×n grid, from the most
-  detailed zoom whose pixels are at least twice as fine as a grid cell (64 tiles
-  at most). The sea is cut to sea level unless the sea floor is asked for.
+  detailed zoom whose pixels are at least twice as fine as a grid cell (100 tiles
+  at most). The detail sets the spacing on the model, not the count: Draft is
+  1 mm, Standard 0.6 mm and Fine 0.4 mm, about one nozzle line, so a 250 mm
+  model at Fine is 626 × 626 and a 120 mm one 301 × 301. Past the tiles' own
+  detail (zoom 14, and about 30 m behind it outside the US, 10 m inside) more
+  points only smooth what is there, so Fine pays on wide prints of big ground
+  more than on small ones. The sea is cut to sea level unless the sea floor is asked for.
 - **Sea floor.** The tiles only carry it up to zoom 10 (75 to 150 m a pixel,
   by latitude). From zoom 11 every sea pixel reads 0: Monterey Canyon is
   -657 m at zoom 10 and 0 at zoom 11. So a print reads the land at its own

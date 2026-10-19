@@ -341,6 +341,26 @@ test('stretch stops run from x1 to x50 and take in a saved value', () => {
   assert.equal(core.withStop(core.STRETCH_STOPS, 80).at(-1), 80);
 });
 
+test('detail is a pitch, so wider models get more grid points', () => {
+  assert.equal(core.gridCells(120, 0.4), 301);
+  assert.equal(core.gridCells(120, 0.6), 201);
+  assert.equal(core.gridCells(250, 0.4), 626);
+  assert.equal(core.gridCells(80, 1), 81);
+  // a count from an old file comes back as itself
+  assert.equal(core.gridCells(120, 120 / 299), 300);
+  assert.equal(core.gridCells(10000, 0.01), core.MAX_CELLS);
+});
+
+test('the finest grid on the widest model gets its zoom within the tile budget', () => {
+  for (let lat = 0; lat <= 70; lat += 5) {
+    for (let side = 1; side <= 500; side *= 1.07) {
+      const c = { lat, lon: 10.3 }, n = core.gridCells(250, 0.4);
+      const z = core.printZoom(c, side, n);
+      assert.ok(z === 14 || core.pixelMetres(lat, z) <= (side * 1000) / n, `${lat}° ${side.toFixed(1)} km`);
+    }
+  }
+});
+
 test('print zoom is fine enough for the grid and within budget', () => {
   const z = core.printZoom(boston, 20, 200);
   assert.ok(core.pixelMetres(boston.lat, z) <= 200);
@@ -463,7 +483,7 @@ test('terrain STL faces outward: top normals point up, bottom down', () => {
 
 test('a print KML carries the square, the settings and the model figures', () => {
   const centre = { name: 'Mount Washington, New Hampshire', lat: 44.2706, lon: -71.3033 };
-  const set = { sideKm: 20, widthMm: 120, cells: 200, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7 };
+  const set = { sideKm: 20, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7 };
   const model = { zoom: 12, pixelM: 27.8, lowM: 410, highM: 1916, reliefMm: 13.55, triangles: 81590 };
   const kml = core.printKml({ centre, set, model, stlFile: 'reach-mount-washington-20km.stl', made: new Date('2026-10-15T12:00:00Z') });
   assert.match(kml, /<Data name="heightStretch"><displayName>Height stretch \(x\)<\/displayName><value>1.5<\/value><\/Data>/);
@@ -485,11 +505,15 @@ test('a print KML carries the square, the settings and the model figures', () =>
 
 test('a print KML round-trips awkward names, and works without a model', () => {
   const centre = { name: 'Rock & "Roll" <Hills>', lat: -33.9, lon: 18.4 };
-  const set = { sideKm: 5, widthMm: 80, cells: 120, exaggeration: 10, baseMm: 2, seaFloorM: 1000, depthStretch: 4, shoreMm: 0.8, shoreRidge: false, label: false, labelText: '', cornerMm: 0, shape: 'rectangle', aspect: 5, bearing: 29, buildings: false, buildingDefaultM: 7 };
+  const set = { sideKm: 5, widthMm: 80, cells: 81, pitchMm: 1, exaggeration: 10, baseMm: 2, seaFloorM: 1000, depthStretch: 4, shoreMm: 0.8, shoreRidge: false, label: false, labelText: '', cornerMm: 0, shape: 'rectangle', aspect: 5, bearing: 29, buildings: false, buildingDefaultM: 7 };
   const kml = core.printKml({ centre, set });
   assert.match(kml, /Rock &amp; &quot;Roll&quot; &lt;Hills&gt;/);
   assert.doesNotMatch(kml, /metresPerPixel/);
   assert.deepEqual(core.parsePrintKml(kml), { centre, set });
+  // a file from before detail was a pitch keeps its count
+  const old = kml.replace(/<Data name="gridPitchMm">[\s\S]*?<\/Data>/, '').replace(/(name="gridCells">.*?<value>)81/, '$1120');
+  assert.equal(core.parsePrintKml(old).set.cells, 120);
+  assert.equal(core.gridCells(80, core.parsePrintKml(old).set.pitchMm), 120);
 });
 
 test('parsePrintKml refuses other KML and bad values', () => {
@@ -697,7 +721,7 @@ test('each building is a closed solid standing on the terrain, courtyards and al
 
 test('a print KML keeps the building settings and what came of them', () => {
   const centre = { name: 'Sunny Isles Beach', lat: 25.94, lon: -80.12 };
-  const set = { sideKm: 1, widthMm: 120, cells: 200, exaggeration: 1, baseMm: 3, seaFloorM: 0, depthStretch: 1, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 10, shape: 'square', aspect: 2, bearing: 0, buildings: true, buildingDefaultM: 10 };
+  const set = { sideKm: 1, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1, baseMm: 3, seaFloorM: 0, depthStretch: 1, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 10, shape: 'square', aspect: 2, bearing: 0, buildings: true, buildingDefaultM: 10 };
   const model = { zoom: 14, pixelM: 8.6, lowM: 0, highM: 4, reliefMm: 0.5, triangles: 5000,
     buildings: { count: 111, tagged: 59, inData: 1, tallestM: 203.4, readAt: '2026-10-16' } };
   const kml = core.printKml({ centre, set, model });
@@ -802,7 +826,7 @@ test('a labelled print is still one closed solid, the letters cut up into its bo
 
 test('a print KML keeps the label setting and what was cut', () => {
   const centre = { name: 'Mount Washington', lat: 44.2706, lon: -71.3033 };
-  const set = { sideKm: 20, widthMm: 120, cells: 200, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: true, labelText: 'Our first hike\nAugust 2026 & <3', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7 };
+  const set = { sideKm: 20, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: true, labelText: 'Our first hike\nAugust 2026 & <3', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7 };
   const label = { lines: ['44.2706°N 71.3033°W', '20 × 20 KM', 'VERTICAL ×1.5'], pxMm: 0.9, depthMm: 0.6 };
   const kml = core.printKml({ centre, set, model: { zoom: 12, pixelM: 27.8, lowM: 410, highM: 1916, reliefMm: 13.55, triangles: 1, label } });
   assert.match(kml, /<Data name="labelText">.*<value>44.2706°N 71.3033°W \/ 20 × 20 KM \/ VERTICAL ×1.5<\/value>/);
