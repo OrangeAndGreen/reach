@@ -702,8 +702,24 @@ export function mapImageZoom(bounds, maxZoom, maxPx = 2048) {
   return z;
 }
 
-/** The zoom whose pixels are at least as fine as the model's grid, within a tile budget. */
-export function printZoom(center, sideKm, cells, maxTiles = 64) {
+/** The most grid points a side a print takes, whatever its width and detail. */
+export const MAX_CELLS = 1000;
+
+/**
+ * Grid points a side for a model widthMm across with about pitchMm between
+ * them. Detail is a pitch rather than a count, so a wide model gets as fine a
+ * grid as a narrow one: 0.4 mm, about a nozzle's line, is 301 points across
+ * 120 mm and 626 across 250 mm.
+ */
+export function gridCells(widthMm, pitchMm) {
+  return Math.max(10, Math.min(MAX_CELLS, Math.round(widthMm / pitchMm) + 1));
+}
+
+/**
+ * The zoom whose pixels are at least as fine as the model's grid, within a
+ * tile budget. A 626-point grid needs up to 64 tiles, so the budget leaves room.
+ */
+export function printZoom(center, sideKm, cells, maxTiles = 100) {
   const want = (sideKm * 1000) / cells;
   let z = 3;
   while (z < 14 && pixelMetres(center.lat, z + 1) >= want * 0.5) z++;
@@ -768,6 +784,7 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ['squareKm', 'Square side (km)', set.sideKm],
     ['modelWidthMm', 'Model width (mm)', set.widthMm],
     ['gridCells', 'Detail (grid points per side)', set.cells],
+    ['gridPitchMm', 'Detail (mm between grid points)', set.pitchMm ?? +(set.widthMm / (set.cells - 1)).toFixed(4)],
     ['heightStretch', 'Height stretch (x)', set.exaggeration],
     ['baseMm', 'Base under the lowest point (mm)', set.baseMm],
     ['seaFloorM', 'Sea floor down to (m, 0 cuts it at sea level)', set.seaFloorM ?? 0],
@@ -887,12 +904,16 @@ export function parsePrintKml(text) {
     return v;
   };
   const exaggeration = num('heightStretch', 0.1, 100);
+  const widthMm = num('modelWidthMm', 10, 1000);
+  const cells = Math.round(num('gridCells', 10, MAX_CELLS));
   return {
     centre: { name: values.centreName || 'Saved print', lat: num('centreLat', -85, 85), lon: num('centreLon', -180, 180) },
     set: {
       sideKm: num('squareKm', 0.1, 1000),
-      widthMm: num('modelWidthMm', 10, 1000),
-      cells: Math.round(num('gridCells', 10, 1000)),
+      widthMm,
+      cells,
+      // files from before detail was a pitch have only the count
+      pitchMm: values.gridPitchMm == null ? widthMm / (cells - 1) : num('gridPitchMm', 0.01, 100),
       exaggeration,
       baseMm: num('baseMm', 0, 100),
       // files from before the sea floor cut it at sea level
