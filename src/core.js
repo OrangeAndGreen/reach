@@ -665,6 +665,61 @@ export function neighbourCentre(print, shape, side) {
   return next;
 }
 
+/**
+ * A frame for part of another: the w-wide square whose bottom-left corner sits
+ * at (x0, y0) mm on frame, with its own mm running 0 to w. A point two parts
+ * share is the same ground from both, since both read it through frame.
+ */
+export function subFrame(frame, x0, y0, w) {
+  const toLonLat = (x, y) => frame.toLonLat(x0 + x, y0 + y);
+  const toMm = (lon, lat) => { const [x, y] = frame.toMm(lon, lat); return [x - x0, y - y0]; };
+  const bounds = lonLatBounds([[0, 0], [w, 0], [w, w], [0, w]].map(([x, y]) => toLonLat(x, y)));
+  return { toLonLat, toMm, bounds };
+}
+
+/** The lon/lat box a list of {lon, lat} fits in. */
+export function lonLatBounds(points) {
+  return {
+    west: Math.min(...points.map((p) => p.lon)), east: Math.max(...points.map((p) => p.lon)),
+    south: Math.min(...points.map((p) => p.lat)), north: Math.max(...points.map((p) => p.lat)),
+  };
+}
+
+/** The most pieces a print splits into, across or down. */
+export const PIECES_MAX = 3;
+
+/**
+ * A square print split into cols x rows square pieces, each widthMm across,
+ * that sit edge to edge as one model. sideKm is the ground across the whole
+ * set. Every piece is cut from one frame, cols x widthMm across and centred on
+ * centre, so a side two pieces share is the same ground on both, with no drift
+ * at the corners. Pieces are named by row from the top (A, B, C) and column
+ * from the left (1, 2, 3), A1 at the top left, and listed in that order.
+ * corners says which of a piece's corners (south-west, south-east, north-east,
+ * north-west on the model) are corners of the whole set. Returns { frame,
+ * acrossMm, downMm, bottomMm, pieceKm, pieces }: bottomMm is where the set's
+ * lower edge sits on frame.
+ */
+export function piecePlan(centre, { sideKm, widthMm, bearing = 0, cols = 1, rows = 1 }) {
+  const acrossMm = cols * widthMm, downMm = rows * widthMm;
+  const frame = printFrame(centre, sideKm, acrossMm, bearing);
+  const bottomMm = (acrossMm - downMm) / 2;
+  const pieces = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const x0 = c * widthMm, y0 = bottomMm + (rows - 1 - r) * widthMm;
+      const f = subFrame(frame, x0, y0, widthMm);
+      const top = r === 0, low = r === rows - 1, left = c === 0, right = c === cols - 1;
+      pieces.push({
+        name: `${String.fromCharCode(65 + r)}${c + 1}`, col: c, row: r, x0, y0, frame: f,
+        centre: f.toLonLat(widthMm / 2, widthMm / 2),
+        corners: [low && left, low && right, top && right, top && left],
+      });
+    }
+  }
+  return { frame, acrossMm, downMm, bottomMm, pieceKm: sideKm / cols, pieces };
+}
+
 const steps = (from, to, by) => Array.from({ length: Math.round((to - from) / by) + 1 }, (_, i) => from + i * by);
 /**
  * The height stretch slider's stops: quarter steps up to x10, where most prints
@@ -749,13 +804,16 @@ export function withSeaFloor(fine, coarse) {
  * exaggeration. The sea floor is cut off seaFloorM below sea level (0 cuts it
  * at sea level), and depths are stretched by depthStretch. used (from
  * shapeCells) limits the lowest and highest points to the grid points a shape
- * prints; the rest are scaled the same way and left unused.
+ * prints; the rest are scaled the same way and left unused. lowM puts the
+ * base under that height instead of this grid's lowest point, so pieces of
+ * one print, each under the lowest point of them all, meet at the same height.
  */
-export function printHeights(heights, { sideKm, widthMm, exaggeration = 1, baseMm = 3, seaFloorM = 0, depthStretch = exaggeration }, used = null) {
+export function printHeights(heights, { sideKm, widthMm, exaggeration = 1, baseMm = 3, seaFloorM = 0, depthStretch = exaggeration, lowM = null }, used = null) {
   const floor = seaFloorM ? -seaFloorM : 0; // not -0, which would show as a lowest point of "-0 m"
   const metres = heights.map((h) => Math.max(floor, h));
   let lo = Infinity, hi = -Infinity;
   metres.forEach((h, k) => { if (used && !used[k]) return; if (h < lo) lo = h; if (h > hi) hi = h; });
+  if (lowM != null) lo = lowM;
   const mmPerMetre = widthMm / (sideKm * 1000);
   const up = (h) => h * mmPerMetre * (h > 0 ? exaggeration : depthStretch); // mm above sea level
   const toMm = (h) => baseMm + up(Math.max(floor, h)) - up(lo);
@@ -767,15 +825,39 @@ export function printHeights(heights, { sideKm, widthMm, exaggeration = 1, baseM
 }
 
 /**
+ * An n x n grid (row 0 at the top) read at m x m points by bilinear
+ * interpolation, for a lighter preview. Its edges read only the source's
+ * edges, so two grids that shared a side still do. m >= n returns z.
+ */
+export function resampleGrid(z, n, m) {
+  if (m >= n) return z;
+  const out = new Array(m * m), s = (n - 1) / (m - 1);
+  for (let j = 0; j < m; j++) {
+    const fy = j * s, j0 = Math.min(n - 2, Math.floor(fy)), ty = fy - j0;
+    for (let i = 0; i < m; i++) {
+      const fx = i * s, i0 = Math.min(n - 2, Math.floor(fx)), tx = fx - i0;
+      const a = z[j0 * n + i0], b = z[j0 * n + i0 + 1], c = z[(j0 + 1) * n + i0], d = z[(j0 + 1) * n + i0 + 1];
+      out[j * m + i] = (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
+    }
+  }
+  return out;
+}
+
+/**
  * A KML of a print: the square as a polygon, a pin at its centre, and every
  * input and derived figure as ExtendedData, so Google Earth shows the area and
  * the settings, and parsePrintKml can rebuild the same STL from the file.
  * model is optional; without it only the inputs are written.
  */
 export function printKml({ centre, set, model = null, stlFile = '', made = new Date() }) {
-  const frame = printFrame(centre, set.sideKm, set.widthMm, set.bearing ?? 0);
-  const b = frame.bounds;
-  const scale = Math.round((set.sideKm * 1e6) / set.widthMm);
+  const cols = set.cols ?? 1, rows = set.rows ?? 1, split = cols * rows > 1;
+  const plan = split ? piecePlan(centre, set) : null;
+  const frame = plan ? plan.frame : printFrame(centre, set.sideKm, set.widthMm, set.bearing ?? 0);
+  const acrossMm = set.widthMm * cols;
+  // a split print's ring is the whole set, its four outside corners
+  const setRing = plan && [[0, plan.bottomMm], [acrossMm, plan.bottomMm], [acrossMm, plan.bottomMm + plan.downMm], [0, plan.bottomMm + plan.downMm]];
+  const b = plan ? lonLatBounds(setRing.map(([x, y]) => frame.toLonLat(x, y))) : frame.bounds;
+  const scale = Math.round((set.sideKm * 1e6) / acrossMm);
   const inputs = [
     ['reachFormat', 'Reach print format', PRINT_FORMAT],
     ['centreName', 'Centre', centre.name],
@@ -799,6 +881,8 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ['bearingDeg', 'Top of the model faces (degrees clockwise from north)', set.bearing ?? 0],
     ['buildings', 'Buildings from OpenStreetMap (1 yes, 0 no)', set.buildings ? 1 : 0],
     ['buildingDefaultM', 'Building height where OSM has none (m)', set.buildingDefaultM ?? DEFAULT_BUILDING_M],
+    ['piecesAcross', 'Pieces across (each one model width)', cols],
+    ['piecesDown', 'Pieces down', rows],
   ];
   const derived = [
     ['boundsNorth', 'North edge', b.north.toFixed(6)],
@@ -806,11 +890,11 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ['boundsEast', 'East edge', b.east.toFixed(6)],
     ['boundsWest', 'West edge', b.west.toFixed(6)],
     ['mapScale', 'Map scale', `1:${scale}`],
-    ['mmPerKmAcross', 'Model mm per km across', +(set.widthMm / set.sideKm).toFixed(4)],
+    ['mmPerKmAcross', 'Model mm per km across', +(acrossMm / set.sideKm).toFixed(4)],
     ['elevationSource', 'Elevation data', 'Mapzen Terrain Tiles on AWS (Terrarium)'],
   ];
   if (model) {
-    const vertical = 1 / ((set.widthMm / (set.sideKm * 1000)) * set.exaggeration);
+    const vertical = 1 / ((acrossMm / (set.sideKm * 1000)) * set.exaggeration);
     derived.push(
       ['elevationZoom', 'Elevation tile zoom', model.zoom],
       ['metresPerPixel', 'Elevation detail (m per pixel)', Math.round(model.pixelM)],
@@ -818,7 +902,7 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
         ['seaFloorZoom', 'Sea floor tile zoom', model.seaZoom],
         ['seaFloorMetresPerPixel', 'Sea floor detail (m per pixel)', Math.round(model.seaPixelM)],
       ] : []),
-      ['gridSpacingM', 'Grid spacing (m)', Math.round((set.sideKm * 1000) / (set.cells - 1))],
+      ['gridSpacingM', 'Grid spacing (m)', Math.round((set.sideKm * 1000) / cols / (set.cells - 1))],
       ['lowestM', 'Lowest point (m)', Math.round(model.lowM)],
       ['highestM', 'Highest point (m)', Math.round(model.highM)],
       ['reliefMm', 'Relief on the model (mm)', +model.reliefMm.toFixed(2)],
@@ -853,9 +937,11 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
   const table = (rows) => rows.filter(([k]) => k !== 'reachFormat')
     .map(([, label, v]) => `<tr><td>${escapeXml(label)}</td><td>${escapeXml(v)}</td></tr>`).join('');
   const shape = set.shape ?? 'square';
-  const description = `<![CDATA[<p>A ${set.sideKm} km ${shape} of terrain as a ${set.widthMm} mm model. Open this file in Reach's Print tab to build the same STL.</p>` +
-    `<table>${table(inputs)}${table(derived)}</table>]]>`;
-  const { ring: outline } = shapeOutline(shape, set.widthMm, { aspect: set.aspect, cornerMm: shape === 'square' ? 0 : set.cornerMm });
+  const description = split
+    ? `<![CDATA[<p>${set.sideKm} km of terrain across as ${cols} × ${rows} pieces of ${set.widthMm} mm that sit edge to edge. Open this file in Reach's Print tab to build the same STLs.</p>`
+    : `<![CDATA[<p>A ${set.sideKm} km ${shape} of terrain as a ${set.widthMm} mm model. Open this file in Reach's Print tab to build the same STL.</p>`;
+  const tables = `<table>${table(inputs)}${table(derived)}</table>]]>`;
+  const outline = setRing || shapeOutline(shape, set.widthMm, { aspect: set.aspect, cornerMm: shape === 'square' ? 0 : set.cornerMm }).ring;
   const ring = [...outline, outline[0]].filter((_, k, all) => all.length < 200 || k % 10 === 0 || k === all.length - 1)
     .map(([x, y]) => { const p = frame.toLonLat(x, y); return [p.lon, p.lat]; });
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -865,7 +951,7 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
   <Style id="square"><LineStyle><color>ff24548f</color><width>3</width></LineStyle><PolyStyle><color>2224548f</color></PolyStyle></Style>
   <Placemark id="reach-print">
     <name>${escapeXml(`${set.sideKm} km print area`)}</name>
-    <description>${description}</description>
+    <description>${description}${tables}</description>
     <styleUrl>#square</styleUrl>
     <ExtendedData>
 ${data(inputs)}
@@ -935,6 +1021,9 @@ export function parsePrintKml(text) {
       // files from before buildings have none
       buildings: values.buildings === '1',
       buildingDefaultM: values.buildingDefaultM == null ? DEFAULT_BUILDING_M : num('buildingDefaultM', 1, 100),
+      // files from before pieces are one piece
+      cols: values.piecesAcross == null ? 1 : Math.round(num('piecesAcross', 1, PIECES_MAX)),
+      rows: values.piecesDown == null ? 1 : Math.round(num('piecesDown', 1, PIECES_MAX)),
     },
   };
 }
@@ -1079,15 +1168,20 @@ export function unprintable(text = '') {
  * stretch, with the depth stretch when the sea floor has its own. wrap is
  * the line the coordinates are on, or null without them.
  */
-export function labelLines(centre, set) {
-  const own = customLines(set.labelText);
+export function labelLines(centre, set, piece = null) {
+  const own = [...(piece ? [pieceLine(piece, set)] : []), ...customLines(set.labelText)];
   return { lines: [...own, ...(set.label ? infoLines(centre, set) : [])], wrap: set.label ? own.length : null };
+}
+
+/** Where a piece goes in its set, for its label: "A2 OF 3 × 2". */
+export function pieceLine(piece, { cols = 1, rows = 1 }) {
+  return `${piece} OF ${cols} × ${rows}`;
 }
 
 function infoLines(centre, set) {
   const deg = (v, pos, neg) => `${Math.abs(v).toFixed(4)}°${v >= 0 ? pos : neg}`;
   const shape = set.shape || 'square';
-  const ground = shape === 'square' ? `${set.sideKm} × ${set.sideKm} KM`
+  const ground = shape === 'square' ? `${set.sideKm} × ${+((set.sideKm * (set.rows ?? 1)) / (set.cols ?? 1)).toFixed(2)} KM`
     : shape === 'rectangle' ? `${set.sideKm} × ${+(set.sideKm / set.aspect).toFixed(2)} KM`
       : `${set.sideKm} KM ${shape.toUpperCase()}`;
   const lines = [`${deg(centre.lat, 'N', 'S')} ${deg(centre.lon, 'E', 'W')}`, ground, `VERTICAL ×${set.exaggeration}`];
@@ -1297,10 +1391,11 @@ function labelCells(label) {
  * point, so a closed mesh stays closed, walls stay upright, and the ground
  * within a corner is squeezed by at most 0.41 rMm.
  */
-export function roundCorner(p, widthMm, rMm) {
+export function roundCorner(p, widthMm, rMm, corners = null) {
   const cx = p[0] < rMm ? rMm : p[0] > widthMm - rMm ? widthMm - rMm : null;
   const cy = p[1] < rMm ? rMm : p[1] > widthMm - rMm ? widthMm - rMm : null;
   if (cx == null || cy == null) return p;
+  if (corners && !corners[cy === rMm ? (cx === rMm ? 0 : 1) : (cx === rMm ? 3 : 2)]) return p;
   const dx = p[0] - cx, dy = p[1] - cy;
   const len = Math.hypot(dx, dy);
   if (!len) return p;
@@ -1315,9 +1410,11 @@ export function roundCorner(p, widthMm, rMm) {
  * extra is more triangles (three points each) to write after the terrain's,
  * such as buildingTriangles. label (from bottomLabel) cuts its letters up
  * into the bottom. cornerMm rounds the corners (roundCorner), so they are
- * slower to lift off the bed.
+ * slower to lift off the bed; corners (south-west, south-east, north-east,
+ * north-west, true to round) limits it to some, the outside corners of a set
+ * of pieces.
  */
-export function terrainStl(zMm, n, widthMm, extra = [], label = null, cornerMm = 0) {
+export function terrainStl(zMm, n, widthMm, extra = [], label = null, cornerMm = 0, corners = null) {
   const step = widthMm / (n - 1);
   const X = (i) => i * step;
   const Y = (j) => (n - 1 - j) * step; // north is +y
@@ -1352,7 +1449,7 @@ export function terrainStl(zMm, n, widthMm, extra = [], label = null, cornerMm =
   if (label) for (const p of labelledBottom(label, ring.map(([i, j]) => [X(i), Y(j), 0]), n)) tris.push(p);
   for (const p of extra) tris.push(p);
   const r = Math.min(cornerMm, widthMm / 2);
-  if (r > 0) for (let k = 0; k < tris.length; k++) tris[k] = roundCorner(tris[k], widthMm, r);
+  if (r > 0) for (let k = 0; k < tris.length; k++) tris[k] = roundCorner(tris[k], widthMm, r, corners);
   return writeStl(tris);
 }
 
@@ -2143,4 +2240,64 @@ export function buildingTriangles(buildings, zMm, n, { widthMm, toMm, mmPerMetre
     for (const p of solid) tris.push(p);
   }
   return tris;
+}
+
+// ---------- zip ----------
+
+const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+
+/** The CRC-32 of a Uint8Array, as ZIP files carry it. */
+export function crc32(bytes) {
+  let c = 0xffffffff;
+  for (let k = 0; k < bytes.length; k++) c = CRC_TABLE[(c ^ bytes[k]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+/**
+ * Files ({ name, data: Uint8Array }) as a ZIP archive, stored rather than
+ * compressed, so it needs no library and every unzipper reads it. Without
+ * ZIP64 it holds up to 4 GB, far past a set of print pieces.
+ */
+export function zipFiles(files, made = new Date()) {
+  const enc = new TextEncoder();
+  const time = (made.getHours() << 11) | (made.getMinutes() << 5) | (made.getSeconds() >> 1);
+  const date = ((Math.max(1980, made.getFullYear()) - 1980) << 9) | ((made.getMonth() + 1) << 5) | made.getDate();
+  const parts = [], central = [];
+  let offset = 0;
+  for (const { name, data } of files) {
+    const nameBytes = enc.encode(name), crc = crc32(data);
+    // the fields a local header and its central directory entry share, from "version needed" on
+    const common = (v) => {
+      v.setUint16(0, 20, true); v.setUint16(2, 0x0800, true); // version 2.0, names in UTF-8
+      v.setUint16(4, 0, true); v.setUint16(6, time, true); v.setUint16(8, date, true); // stored
+      v.setUint32(10, crc, true); v.setUint32(14, data.length, true); v.setUint32(18, data.length, true);
+      v.setUint16(22, nameBytes.length, true); v.setUint16(24, 0, true);
+    };
+    const local = new Uint8Array(30 + nameBytes.length), lv = new DataView(local.buffer);
+    lv.setUint32(0, 0x04034b50, true);
+    common(new DataView(local.buffer, 4));
+    local.set(nameBytes, 30);
+    const entry = new Uint8Array(46 + nameBytes.length), ev = new DataView(entry.buffer);
+    ev.setUint32(0, 0x02014b50, true);
+    ev.setUint16(4, 20, true); // made by version 2.0
+    common(new DataView(entry.buffer, 6));
+    ev.setUint32(42, offset, true); // comment, disk, attributes: all 0
+    entry.set(nameBytes, 46);
+    parts.push(local, data);
+    central.push(entry);
+    offset += local.length + data.length;
+  }
+  const size = central.reduce((s, e) => s + e.length, 0);
+  const end = new Uint8Array(22), endv = new DataView(end.buffer);
+  endv.setUint32(0, 0x06054b50, true);
+  endv.setUint16(8, files.length, true); endv.setUint16(10, files.length, true);
+  endv.setUint32(12, size, true); endv.setUint32(16, offset, true);
+  const out = new Uint8Array(offset + size + 22);
+  let at = 0;
+  for (const p of [...parts, ...central, end]) { out.set(p, at); at += p.length; }
+  return out;
 }

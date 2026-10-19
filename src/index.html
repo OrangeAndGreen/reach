@@ -215,6 +215,19 @@
             <option value="5">5 : 1</option>
           </select>
         </div>
+        <div id="print-pieces-field" class="field">
+          <label for="print-pieces">Pieces</label>
+          <select id="print-pieces">
+            <option value="1x1" selected>One piece</option>
+            <option value="2x1">2 × 1</option>
+            <option value="1x2">1 × 2</option>
+            <option value="2x2">2 × 2</option>
+            <option value="3x1">3 × 1</option>
+            <option value="3x2">3 × 2</option>
+            <option value="2x3">2 × 3</option>
+            <option value="3x3">3 × 3</option>
+          </select>
+        </div>
         <div class="field">
           <label for="print-turn">Turn <span id="print-turn-value"></span></label>
           <input id="print-turn" type="range" min="-90" max="90" step="1" value="0">
@@ -307,12 +320,14 @@
         <textarea id="print-text" rows="3" placeholder="Up to 3 lines of 30 letters" spellcheck="false"></textarea>
       </div>
       <p id="print-label-hint" class="hint" hidden></p>
+      <p id="print-pieces-hint" class="hint" hidden></p>
       <p id="print-corner-hint" class="hint">Rounded corners are slower to lift off the bed as the print cools. The ground within a corner is squeezed to fit, by up to 0.4 of the radius.</p>
       <p id="print-buildings-hint" class="hint" hidden></p>
       <div id="print-status" class="status" aria-live="polite"></div>
 
       <figure class="chart-wrap">
-        <figcaption>Preview <span id="print-preview-hint" class="hint">(drag to turn, scroll to zoom)</span></figcaption>
+        <figcaption>Preview <span id="print-preview-hint" class="hint">(drag to turn, scroll to zoom)</span>
+          <select id="print-view" class="preview-pick" aria-label="Which piece to preview" hidden></select></figcaption>
         <div id="print-preview" class="preview">
           <button id="print-preview-size" class="preview-size" type="button" aria-pressed="false" aria-label="Enlarge the preview" title="Enlarge the preview">
             <svg class="grow" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/></svg>

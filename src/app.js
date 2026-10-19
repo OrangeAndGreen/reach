@@ -691,6 +691,8 @@ $('drive-kml').addEventListener('click', () => {
 
 function printSettings() {
   const widthMm = Number($('print-width').value), pitchMm = Number($('print-pitch').value);
+  // Only a square splits into pieces; every other shape is one.
+  const [cols, rows] = $('print-shape').value === 'square' ? $('print-pieces').value.split('x').map(Number) : [1, 1];
   return {
     sideKm: Number($('print-side').value),
     widthMm,
@@ -709,7 +711,18 @@ function printSettings() {
     bearing: Number($('print-turn').value),
     buildings: $('print-buildings').value === 'osm' && Number($('print-side').value) <= core.BUILDINGS_MAX_KM,
     buildingDefaultM: Number($('print-default').value),
+    cols,
+    rows,
   };
+}
+
+/**
+ * A print's outline on the map as one shape: a set of pieces is a rectangle
+ * around them all, so it outlines, drags and steps as one.
+ */
+function wholeShape(set) {
+  if (set.cols * set.rows === 1) return set;
+  return { ...set, widthMm: set.widthMm * set.cols, shape: 'rectangle', aspect: set.cols / set.rows, cols: 1, rows: 1 };
 }
 
 /** The shoreline select's value, "groove-0.4" or "ridge-0.8" or "0", as settings. */
@@ -727,6 +740,7 @@ function setPrintCentre(place, fit = true) {
 
 /** The print's outline on the map, as Leaflet lat/lngs: the shape, turned. */
 function printOutline(set, centre) {
+  set = wholeShape(set);
   const frame = core.printFrame(centre, set.sideKm, set.widthMm, set.bearing);
   const { ring } = core.shapeOutline(set.shape, set.widthMm, { aspect: set.aspect, cornerMm: set.shape === 'square' ? 0 : set.cornerMm });
   return ring.map(([x, y]) => { const p = frame.toLonLat(x, y); return [p.lat, p.lon]; });
@@ -745,6 +759,15 @@ function drawPrintSquare(fit) {
   L.polygon(outline, { color: '#ffffff', weight: 7, opacity: 0.9, fill: false, interactive: false }).addTo(printLayer);
   const rect = L.polygon(outline, { color: cssVar('--accent'), weight: 3, fill: true, fillOpacity: 0.06, interactive: false });
   rect.addTo(printLayer);
+  // The lines between pieces, thin, so the set still reads as one print.
+  if (set.cols * set.rows > 1) {
+    const plan = core.piecePlan(centre, set), w = set.widthMm;
+    const at = (x, y) => { const p = plan.frame.toLonLat(x, y); return [p.lat, p.lon]; };
+    const lines = [];
+    for (let c = 1; c < set.cols; c++) lines.push([at(c * w, plan.bottomMm), at(c * w, plan.bottomMm + plan.downMm)]);
+    for (let r = 1; r < set.rows; r++) lines.push([at(0, plan.bottomMm + r * w), at(plan.acrossMm, plan.bottomMm + r * w)]);
+    L.polyline(lines, { color: cssVar('--accent'), weight: 1.5, dashArray: '5 5', interactive: false }).addTo(printLayer);
+  }
   L.circleMarker([centre.lat, centre.lon], { radius: 5, color: '#fff', weight: 2, fillColor: cssVar('--accent'), fillOpacity: 1, interactive: false })
     .addTo(printLayer);
   // Wider, unseen grips over the line and the dot, so a finger can take hold of them.
@@ -752,7 +775,7 @@ function drawPrintSquare(fit) {
   edge.getElement().addEventListener('pointerdown', (e) => startDrag(e, false));
   const dot = L.circleMarker([centre.lat, centre.lon], { radius: 14, opacity: 0, fillOpacity: 0, className: 'print-grip print-dot' }).addTo(printLayer);
   dot.getElement().addEventListener('pointerdown', (e) => startDrag(e, true));
-  if (!drag && (set.shape === 'square' || set.shape === 'rectangle')) drawStepArrows(set, centre);
+  if (!drag && (set.shape === 'square' || set.shape === 'rectangle')) drawStepArrows(wholeShape(set), centre);
   if (fit) map.fitBounds(rect.getBounds().pad(0.6));
 }
 
@@ -786,7 +809,7 @@ function drawStepArrows(set, centre) {
 }
 
 function stepPrint(side) {
-  const set = printSettings();
+  const set = wholeShape(printSettings());
   const next = core.neighbourCentre({ centre: state.print, sideKm: set.sideKm, widthMm: set.widthMm, bearing: set.bearing, aspect: set.aspect }, set.shape, side);
   // When the print steps out of view the map follows it as far, so the arrow stays under the pointer.
   const shift = map.latLngToContainerPoint([next.lat, next.lon]).subtract(map.latLngToContainerPoint([state.print.lat, state.print.lon]));
@@ -906,10 +929,11 @@ function sampler(tiles, z) {
 
 /**
  * The print square's n x n grid of heights (row 0 along the model's top,
- * north unless it is turned), sampled from the zoom-z tiles. Returns null
- * when a newer build has started meanwhile.
+ * north unless it is turned), sampled from the zoom-z tiles at frame's points.
+ * centre and set.sideKm say which tiles to read. Returns null when a newer
+ * build has started meanwhile.
  */
-async function readPrintGrid(centre, set, z, run, what) {
+async function readPrintGrid(frame, centre, set, z, run, what) {
   const list = core.tilesForRadius(centre, set.sideKm * 0.71, z);
   const tiles = new Map();
   let done = 0;
@@ -918,7 +942,6 @@ async function readPrintGrid(centre, set, z, run, what) {
     if (run === modelRun) progress('print', `Reading the ${what}: tile ${++done} of ${list.length}`, done / list.length);
   }));
   if (run !== modelRun) return null;
-  const frame = core.printFrame(centre, set.sideKm, set.widthMm, set.bearing);
   const at = sampler(tiles, z);
   const n = set.cells, step = set.widthMm / (n - 1);
   const heights = new Array(n * n);
@@ -958,38 +981,47 @@ async function buildModel() {
   const centre = state.print;
   $('print-run').disabled = true;
   try {
-    const z = core.printZoom(centre, set.sideKm, set.cells);
-    let heights = await readPrintGrid(centre, set, z, run, 'terrain');
-    if (!heights) return;
+    // A print in pieces is a print of each piece's ground, all read through the set's one frame.
+    const plan = core.piecePlan(centre, set);
+    const split = plan.pieces.length > 1;
+    const pieceSet = { ...set, sideKm: plan.pieceKm };
+    const n = set.cells;
+    // One zoom for every piece, so the side two pieces share is read alike.
+    const z = core.printZoom(centre, pieceSet.sideKm, n);
+    const pixel = core.pixelMetres(centre.lat, z);
     // Past zoom 10 the tiles have no sea floor, so it comes from zoom 10, under the detailed land.
     const seaZoom = set.seaFloorM > 0 ? Math.min(z, core.SEA_FLOOR_ZOOM) : null;
-    if (seaZoom != null && seaZoom < z) {
-      const floor = await readPrintGrid(centre, set, seaZoom, run, 'sea floor');
-      if (!floor) return;
-      heights = core.withSeaFloor(heights, floor);
-    }
-    const n = set.cells;
-    const pixel = core.pixelMetres(centre.lat, z);
-    const frame = core.printFrame(centre, set.sideKm, set.widthMm, set.bearing);
     // A square keeps the whole grid and its own rounded corners; any other shape is cut from the grid.
     const outline = set.shape === 'square' ? null : core.shapeOutline(set.shape, set.widthMm, set);
     const cut = outline && core.shapeCells(outline.ring, n, set.widthMm);
-    let placed = null, buildings = null, missed = '';
+    let reply = null, missed = '';
     if (set.buildings) {
       status('print', 'Fetching the buildings from OpenStreetMap…');
-      const bounds = frame.bounds;
-      let reply = null;
+      const corner = plan.pieces.flatMap(({ frame: { bounds: b } }) => [{ lon: b.west, lat: b.south }, { lon: b.east, lat: b.north }]);
       try {
-        reply = await osmBuildings(bounds);
+        reply = await osmBuildings(core.lonLatBounds(corner));
       } catch (err) {
         missed = ` Couldn't fetch the buildings (${err.message}), so this is the terrain alone.`;
       }
       if (run !== modelRun) return;
+    }
+    const read = [];
+    for (const piece of plan.pieces) {
+      const where = split ? { ...piece.centre, name: centre.name } : centre;
+      const of = split ? ` of ${piece.name}` : '';
+      let heights = await readPrintGrid(piece.frame, where, pieceSet, z, run, `terrain${of}`);
+      if (!heights) return;
+      if (seaZoom != null && seaZoom < z) {
+        const floor = await readPrintGrid(piece.frame, where, pieceSet, seaZoom, run, `sea floor${of}`);
+        if (!floor) return;
+        heights = core.withSeaFloor(heights, floor);
+      }
+      let placed = null, buildings = null;
       if (reply) {
         const { osm, readAt } = reply;
-        const footprints = core.buildingFootprints(osm, bounds, set.widthMm, { frame, pieces: outline?.pieces });
+        const footprints = core.buildingFootprints(osm, piece.frame.bounds, set.widthMm, { frame: piece.frame, pieces: outline?.pieces });
         // Around a building the terrain may hold, its surroundings are read a pixel and a half out, clear of the blur.
-        placed = core.placeBuildings(footprints, heights, n, { ...set, padM: 1.5 * pixel, defaultM: set.buildingDefaultM });
+        placed = core.placeBuildings(footprints, heights, n, { ...pieceSet, padM: 1.5 * pixel, defaultM: set.buildingDefaultM });
         heights = placed.heights;
         const list = placed.buildings;
         buildings = {
@@ -997,43 +1029,55 @@ async function buildModel() {
           tallestM: list.reduce((m, b) => Math.max(m, b.heightM), 0), liftM: placed.liftM, readAt, triangles: 0,
         };
       }
+      read.push({ piece, heights, placed, buildings });
     }
-    const scaled = core.printHeights(heights, set, cut?.used);
-    const shore = set.shoreMm > 0 ? core.shorePoints(heights, n) : null;
-    if (shore) scaled.mm = core.markShore(scaled.mm, shore, set.shoreMm, set.shoreRidge);
-    const extra = placed ? core.buildingTriangles(placed.buildings, scaled.mm, n, { ...set, ...scaled }) : [];
-    if (buildings) buildings.triangles = extra.length / 3;
-    const { lines, wrap } = core.labelLines(centre, set);
-    const label = lines.length ? core.bottomLabel(lines, scaled.mm, n, set.widthMm, outline, set.bearing, wrap) : null;
-    const cutLabel = label?.why ? null : label;
-    let stl, top = 2 * (n - 1) ** 2;
-    if (cut) {
-      const mesh = core.shapeMesh(scaled.mm, cut, extra, cutLabel);
-      stl = core.writeStl(mesh.tris);
-      top = mesh.top;
-    } else {
-      stl = core.terrainStl(scaled.mm, n, set.widthMm, extra, cutLabel, set.cornerMm);
-    }
+    // Every piece stands on the base under the lowest point of them all, so their sides meet at one height.
+    const lowM = Math.min(...read.map((r) => core.printHeights(r.heights, pieceSet, cut?.used).lowM));
+    const pieces = read.map(({ piece, heights, placed, buildings }) => {
+      const scaled = core.printHeights(heights, { ...pieceSet, lowM }, cut?.used);
+      const shore = set.shoreMm > 0 ? core.shorePoints(heights, n) : null;
+      if (shore) scaled.mm = core.markShore(scaled.mm, shore, set.shoreMm, set.shoreRidge);
+      const extra = placed ? core.buildingTriangles(placed.buildings, scaled.mm, n, { ...pieceSet, ...scaled }) : [];
+      if (buildings) buildings.triangles = extra.length / 3;
+      const { lines, wrap } = core.labelLines(centre, set, split ? piece.name : null);
+      const label = lines.length ? core.bottomLabel(lines, scaled.mm, n, set.widthMm, outline, set.bearing, wrap) : null;
+      const cutLabel = label?.why ? null : label;
+      let stl, top = 2 * (n - 1) ** 2;
+      if (cut) {
+        const mesh = core.shapeMesh(scaled.mm, cut, extra, cutLabel);
+        stl = core.writeStl(mesh.tris);
+        top = mesh.top;
+      } else {
+        stl = core.terrainStl(scaled.mm, n, set.widthMm, extra, cutLabel, set.cornerMm, split ? piece.corners : null);
+      }
+      return { name: piece.name, col: piece.col, row: piece.row, corners: piece.corners, stl, top, outline, scaled, set: pieceSet, buildings, shore, label };
+    });
     state.model = {
-      stl, top, outline, scaled, set, centre, zoom: z, pixel, buildings, shore, label,
-      seaZoom, seaPixel: seaZoom == null ? null : core.pixelMetres(centre.lat, seaZoom),
+      set, centre, plan, pieces, zoom: z, pixel, seaZoom, seaPixel: seaZoom == null ? null : core.pixelMetres(centre.lat, seaZoom),
+      lowM, highM: Math.max(...pieces.map((p) => p.scaled.highM)), reliefMm: Math.max(...pieces.map((p) => p.scaled.reliefMm)),
+      buildings: sumBuildings(pieces),
     };
+    showPieceChoice();
     showModel();
     const sea = seaZoom != null && seaZoom < z ? `, the sea floor at ${Math.round(state.model.seaPixel)} m,` : '';
-    const lifted = buildings?.liftM > core.LIFTED_M
-      ? ` The elevation data here holds the buildings: the ground under them reads about ${core.formatHeight(buildings.liftM, state.units)} above the open ground nearby, so the land prints lumpy under them.`
+    const lifted = state.model.buildings?.liftM > core.LIFTED_M
+      ? ` The elevation data here holds the buildings: the ground under them reads about ${core.formatHeight(state.model.buildings.liftM, state.units)} above the open ground nearby, so the land prints lumpy under them.`
       : '';
     // Under about 40 pixels across, the ground is a smooth blur of a few readings.
-    const smooth = (set.sideKm * 1000) / pixel < 40
-      ? ` The square is only ${Math.round((set.sideKm * 1000) / pixel)} pixels of elevation data across, so its ground prints smooth: a square this small is for buildings.`
+    const across = Math.round((pieceSet.sideKm * 1000) / pixel);
+    const smooth = across < 40
+      ? ` The ${split ? 'piece' : 'square'} is only ${across} pixels of elevation data across, so its ground prints smooth: a square this small is for buildings.`
       : '';
     const skew = core.edgeSkew(centre, set.sideKm);
     const pole = centre.lat >= 0 ? 'north' : 'south', equator = centre.lat >= 0 ? 'south' : 'north';
     const skewed = skew <= SKEW_WARN ? ''
-      : set.shape === 'square' && !set.bearing
+      : set.shape === 'square' && !set.bearing && !split
         ? ` The square is even in latitude and longitude, so on the ground its ${pole} edge is ${Math.round(skew * 100)}% shorter than its ${equator} edge, and the print stretches it to match.`
         : ` The print is even in latitude and longitude, so on the ground its ${pole}ern part is up to ${Math.round(skew * 100)}% narrower east to west than its ${equator}ern part, and the print stretches it to match.`;
-    status('print', `Terrain read at ${Math.round(pixel)} m per pixel${sea} and sampled on a ${n} × ${n} grid.${smooth}${skewed}${lifted}${missed}`, Boolean(missed));
+    const grid = split
+      ? `sampled on ${pieces.length} pieces of ${n} × ${n}, each with its base under ${core.formatHeight(lowM, state.units)}, the lowest point of the set, so their sides meet.`
+      : `sampled on a ${n} × ${n} grid.`;
+    status('print', `Terrain read at ${Math.round(pixel)} m per pixel${sea} and ${grid}${smooth}${skewed}${lifted}${missed}`, Boolean(missed));
     $('print-stl').disabled = false;
     $('print-kml').disabled = false;
   } catch (err) {
@@ -1042,6 +1086,28 @@ async function buildModel() {
     if (run === modelRun) $('print-run').disabled = false;
   }
 }
+
+/** The buildings of every piece together, or null without them. A building on a seam counts in both pieces. */
+function sumBuildings(pieces) {
+  const all = pieces.map((p) => p.buildings).filter(Boolean);
+  if (!all.length) return null;
+  const sum = (k) => all.reduce((s, b) => s + b[k], 0);
+  const lifts = all.map((b) => b.liftM).filter((v) => v != null);
+  return {
+    count: sum('count'), tagged: sum('tagged'), inData: sum('inData'), triangles: sum('triangles'),
+    tallestM: Math.max(...all.map((b) => b.tallestM)), liftM: lifts.length ? Math.max(...lifts) : null, readAt: all[0].readAt,
+  };
+}
+
+/** The preview's piece list: the whole set, then each piece. Hidden for a print in one piece. */
+function showPieceChoice() {
+  const el = $('print-view'), { pieces } = state.model;
+  const was = el.value;
+  el.hidden = pieces.length < 2;
+  el.replaceChildren(new Option('All pieces', 'all'), ...pieces.map((p, k) => new Option(`Piece ${p.name}`, String(k))));
+  el.value = [...el.options].some((o) => o.value === was) ? was : 'all';
+}
+$('print-view').addEventListener('change', showModel);
 $('print-run').addEventListener('click', buildModel);
 // "Your own…" opens a box for a side typed by hand, which joins the list in order.
 let lastSide = $('print-side').value;
@@ -1115,7 +1181,7 @@ function labelPitches() {
 }
 labelPitches();
 // The width sets the corner radius against the outline, so the map's outline follows it.
-$('print-width').addEventListener('change', () => { labelPitches(); drawPrintSquare(false); buildModel(); });
+$('print-width').addEventListener('change', () => { labelPitches(); showShapeControls(); drawPrintSquare(false); buildModel(); });
 $('print-shore').addEventListener('change', () => { $('print-shore-hint').hidden = $('print-shore').value === '0'; buildModel(); });
 $('print-label').addEventListener('change', () => { showLabelControls(); buildModel(); });
 $('print-text').addEventListener('input', showLabelControls);
@@ -1136,6 +1202,12 @@ $('print-corner').addEventListener('change', () => { showShapeControls(); drawPr
 function showShapeControls() {
   const shape = $('print-shape').value;
   $('print-aspect-field').hidden = shape !== 'rectangle';
+  $('print-pieces-field').hidden = shape !== 'square';
+  const [cols, rows] = $('print-pieces').value.split('x').map(Number);
+  const split = shape === 'square' && cols * rows > 1, w = Number($('print-width').value);
+  $('print-pieces-hint').hidden = !split;
+  $('print-pieces-hint').textContent = `${cols} across by ${rows} down. Size across is the whole set's ground, and each piece is the model width, so together they are ${cols * w} × ${rows * w} mm. ` +
+    'Every piece stands on the base under the lowest point of the whole set, so their sides meet at the same height, and the label underneath names each one (A1 at the top left). Only the outside corners are rounded.';
   $('print-corner-field').hidden = shape === 'circle';
   $('print-corner-hint').hidden = shape === 'circle' || $('print-corner').value === '0';
   $('print-corner-hint').textContent = shape === 'square'
@@ -1144,7 +1216,7 @@ function showShapeControls() {
   const turn = Number($('print-turn').value);
   $('print-turn-value').textContent = turn ? `${(turn + 360) % 360}° (${compass(turn)})` : 'north up';
 }
-for (const id of ['print-shape', 'print-aspect']) $(id).addEventListener('change', () => { showShapeControls(); drawPrintSquare(false); buildModel(); });
+for (const id of ['print-shape', 'print-aspect', 'print-pieces']) $(id).addEventListener('change', () => { showShapeControls(); drawPrintSquare(false); buildModel(); });
 // The outline turns on the map as the slider moves; the model builds once it is let go.
 $('print-turn').addEventListener('input', () => { showShapeControls(); drawPrintSquare(false); });
 $('print-turn').addEventListener('change', buildModel);
@@ -1223,6 +1295,67 @@ function showModel() {
     const loop = () => { controls.update(); renderer.render(scene, camera); requestAnimationFrame(loop); };
     loop();
   }
+  const shown = previewGeometry(m);
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(shown.pos, 3));
+  geom.setAttribute('normal', new THREE.BufferAttribute(shown.nrm, 3));
+  geom.setAttribute('color', new THREE.BufferAttribute(shown.colours, 3));
+  geom.rotateX(-Math.PI / 2); // STL is z-up, three is y-up: north (+y) becomes -z, away from the camera
+  geom.translate(-shown.acrossMm / 2, 0, shown.downMm / 2);
+  if (viewer.mesh) { viewer.scene.remove(viewer.mesh); viewer.mesh.geometry.dispose(); }
+  viewer.mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0 }));
+  viewer.scene.add(viewer.mesh);
+  const w = Math.max(shown.acrossMm, shown.downMm);
+  viewer.camera.position.set(0, w * 0.95, w * 1.35);
+  viewer.controls.target.set(0, m.set.baseMm + m.reliefMm / 3, 0);
+  viewer.controls.update();
+  renderPrintTable();
+}
+
+/** About this many grid points across a whole set in the preview keeps it near a million triangles. */
+const PREVIEW_POINTS = 700;
+/** The gap between pieces laid out in the preview, so each one shows. */
+const PREVIEW_GAP_MM = 1;
+
+/**
+ * What the preview shows: the print, one piece picked from a set, or the
+ * whole set laid out. Laid out, a set too fine for the preview shows each
+ * piece's ground on a lighter grid, without its buildings or label.
+ */
+function previewGeometry(m) {
+  const view = m.pieces.length > 1 ? $('print-view').value : '0';
+  if (view !== 'all') {
+    const p = m.pieces[Number(view)];
+    return { ...pieceGeometry(p), acrossMm: p.set.widthMm, downMm: p.set.widthMm };
+  }
+  const { cols, rows, widthMm: w, cells: n } = m.set;
+  const lite = Math.min(n, Math.floor(PREVIEW_POINTS / Math.max(cols, rows)));
+  const step = w + PREVIEW_GAP_MM;
+  const parts = m.pieces.map((p) => {
+    const q = lite >= n ? p : {
+      ...p, top: 2 * (lite - 1) ** 2, set: { ...p.set, cells: lite }, shore: null, label: null, buildings: null,
+      stl: core.terrainStl(core.resampleGrid(p.scaled.mm, n, lite), lite, w, [], null, p.set.cornerMm, p.corners),
+    };
+    return { ...pieceGeometry(q), x: p.col * step, y: (rows - 1 - p.row) * step };
+  });
+  const size = parts.reduce((s, p) => s + p.pos.length, 0);
+  const pos = new Float32Array(size), nrm = new Float32Array(size), colours = new Float32Array(size);
+  let at = 0;
+  for (const part of parts) {
+    for (let k = 0; k < part.pos.length; k += 3) {
+      pos[at + k] = part.pos[k] + part.x;
+      pos[at + k + 1] = part.pos[k + 1] + part.y;
+      pos[at + k + 2] = part.pos[k + 2];
+    }
+    nrm.set(part.nrm, at);
+    colours.set(part.colours, at);
+    at += part.pos.length;
+  }
+  return { pos, nrm, colours, acrossMm: cols * step - PREVIEW_GAP_MM, downMm: rows * step - PREVIEW_GAP_MM };
+}
+
+/** One piece's STL as the preview's points, normals and colours. */
+function pieceGeometry(m) {
   const view = new DataView(m.stl);
   const count = view.getUint32(80, true);
   const pos = new Float32Array(count * 9);
@@ -1231,9 +1364,6 @@ function showModel() {
     for (let k = 0; k < 9; k++) pos[t * 9 + k] = view.getFloat32(o + 12 + k * 4, true);
     for (let v = 0; v < 3; v++) for (let k = 0; k < 3; k++) nrm[t * 9 + v * 3 + k] = view.getFloat32(o + k * 4, true);
   }
-  const geom = new THREE.BufferGeometry();
-  geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geom.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
   // The sea floor in blue: top-surface vertices below sea level (the top comes first in the STL).
   // The shoreline line dark, and buildings, written last, in grey.
   const colours = new Float32Array(count * 9);
@@ -1251,41 +1381,40 @@ function showModel() {
       : m.scaled.seaMm != null && v < topVertices && pos[v * 3 + 2] < m.scaled.seaMm - 1e-3 ? sea : land;
     colours[v * 3] = c.r; colours[v * 3 + 1] = c.g; colours[v * 3 + 2] = c.b;
   }
-  geom.setAttribute('color', new THREE.BufferAttribute(colours, 3));
-  geom.rotateX(-Math.PI / 2); // STL is z-up, three is y-up: north (+y) becomes -z, away from the camera
-  geom.translate(-m.set.widthMm / 2, 0, m.set.widthMm / 2);
-  if (viewer.mesh) { viewer.scene.remove(viewer.mesh); viewer.mesh.geometry.dispose(); }
-  viewer.mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0 }));
-  viewer.scene.add(viewer.mesh);
-  const w = m.set.widthMm;
-  viewer.camera.position.set(0, w * 0.95, w * 1.35);
-  viewer.controls.target.set(0, m.set.baseMm + m.scaled.reliefMm / 3, 0);
-  viewer.controls.update();
-  renderPrintTable();
+  return { pos, nrm, colours };
 }
 
 function renderPrintTable() {
   const m = state.model;
   if (!m) { $('print-table').innerHTML = ''; return; }
-  const { set, scaled } = m;
-  const tallMm = set.baseMm + scaled.reliefMm;
-  const scale = Math.round((set.sideKm * 1e6) / set.widthMm);
+  const { set, pieces } = m;
+  const split = pieces.length > 1, first = pieces[0], scaled = first.scaled;
+  const tallMm = set.baseMm + m.reliefMm;
+  const acrossMm = set.widthMm * set.cols, downMm = set.widthMm * set.rows;
+  const scale = Math.round((set.sideKm * 1e6) / acrossMm);
   const side = (km) => core.formatSide(km, state.units);
-  const ground = set.shape === 'rectangle' ? `${side(set.sideKm)} × ${side(set.sideKm / set.aspect)} rectangle` : `${side(set.sideKm)} ${set.shape}`;
-  const ring = m.outline ? m.outline.ring : [[0, 0], [set.widthMm, set.widthMm]];
+  const ground = split ? `${side(set.sideKm)} × ${side((set.sideKm * set.rows) / set.cols)}`
+    : set.shape === 'rectangle' ? `${side(set.sideKm)} × ${side(set.sideKm / set.aspect)} rectangle` : `${side(set.sideKm)} ${set.shape}`;
+  const ring = first.outline ? first.outline.ring : [[0, 0], [set.widthMm, set.widthMm]];
   const across = (k) => +(Math.max(...ring.map((p) => p[k])) - Math.min(...ring.map((p) => p[k]))).toFixed(1);
-  const corners = set.cornerMm && set.shape !== 'circle' ? `, corners rounded ${set.cornerMm} mm` : '';
+  const corners = set.cornerMm && set.shape !== 'circle' ? `, ${split ? 'outside ' : ''}corners rounded ${set.cornerMm} mm` : '';
+  const tallest = pieces.reduce((a, b) => (b.scaled.reliefMm > a.scaled.reliefMm ? b : a));
+  const stlMb = pieces.reduce((s, p) => s + p.stl.byteLength, 0) / 1048576;
+  const triangles = pieces.reduce((s, p) => s + new DataView(p.stl).getUint32(80, true), 0);
   const rows = [
     ['Ground covered', `${ground}${set.bearing ? `, its top facing ${(set.bearing + 360) % 360}° (${compass(set.bearing)})` : ''}`],
-    ['Model', `${across(0)} × ${across(1)} × ${tallMm.toFixed(1)} mm${corners}`],
-    ['Lowest to highest', `${core.formatHeight(scaled.lowM, state.units)} to ${core.formatHeight(scaled.highM, state.units)}`],
+    ['Model', split
+      ? `${set.cols} × ${set.rows} pieces of ${set.widthMm} × ${set.widthMm} mm, ${acrossMm} × ${downMm} mm together; the tallest ${tallMm.toFixed(1)} mm (${tallest.name})${corners}`
+      : `${across(0)} × ${across(1)} × ${tallMm.toFixed(1)} mm${corners}`],
+    ...(split ? [['Base', `${set.baseMm} mm under ${core.formatHeight(m.lowM, state.units)}, the lowest point of the set, on every piece, so their sides meet at the same height`]] : []),
+    ['Lowest to highest', `${core.formatHeight(m.lowM, state.units)} to ${core.formatHeight(m.highM, state.units)}`],
     ['Map scale', `1 : ${scale.toLocaleString('en-US')}`],
     ['Height stretch', `× ${set.exaggeration}, so 1 mm of model is ${core.formatHeight(1 / (scaled.mmPerMetre * set.exaggeration), state.units)}`],
     ...(set.seaFloorM > 0 ? [['Sea floor', seaFloorText(set, scaled)]] : []),
-    ...(set.shoreMm > 0 ? [['Shoreline', shoreText(m)]] : []),
-    ...(m.label ? [['Label underneath', labelText(m.label)]] : []),
+    ...(set.shoreMm > 0 ? [['Shoreline', shoreText(set, pieces.some((p) => p.shore.includes(1)))]] : []),
+    ...(first.label ? [['Label underneath', `${split ? `On ${first.name}: ` : ''}${labelText(first.label)}`]] : []),
     ...(m.buildings ? [['Buildings', buildingsText(m)]] : []),
-    ['STL', `${(m.stl.byteLength / 1048576).toFixed(1)} MB, ${new DataView(m.stl).getUint32(80, true).toLocaleString('en-US')} triangles`],
+    ['STL', `${split ? `${pieces.length} files in one ZIP, ` : ''}${stlMb.toFixed(1)} MB, ${triangles.toLocaleString('en-US')} triangles`],
   ];
   $('print-table').innerHTML = `<tbody>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</tbody>`;
 }
@@ -1303,9 +1432,9 @@ function seaFloorText(set, scaled) {
   return `${limit} at ${stretch}; ${level}`;
 }
 
-function shoreText({ set, shore }) {
+function shoreText(set, coast) {
   const what = set.shoreRidge ? 'ridge' : 'groove';
-  if (!shore.includes(1)) return `No coast in this square, so no ${what}`;
+  if (!coast) return `No coast in this print, so no ${what}`;
   const wide = set.widthMm / (set.cells - 1);
   return set.shoreRidge
     ? `A ridge ${set.shoreMm} mm high along the coast, ${wide.toFixed(2)} mm from each side to its top`
@@ -1328,26 +1457,38 @@ function buildingsText({ buildings: b, set }) {
   return parts.join('; ');
 }
 
-function printFileName(m, ext) {
+/** A print's file name; a set of pieces adds its layout, and one piece of it its name. */
+function printFileName(m, ext, piece = '') {
   const slug = m.centre.name.split(',')[0].toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'print';
   const shape = m.set.shape && m.set.shape !== 'square' ? `-${m.set.shape}` : '';
-  return `reach-${slug}-${m.set.sideKm}km${shape}.${ext}`;
+  const layout = m.set.cols * m.set.rows > 1 ? `-${m.set.cols}x${m.set.rows}` : '';
+  return `reach-${slug}-${m.set.sideKm}km${shape}${layout}${piece ? `-${piece}` : ''}.${ext}`;
 }
+
+/** A print in pieces downloads as one ZIP of their STLs. */
+const stlFileName = (m) => printFileName(m, m.pieces.length > 1 ? 'zip' : 'stl');
 
 $('print-stl').addEventListener('click', () => {
   const m = state.model;
   if (!m) return;
-  download(printFileName(m, 'stl'), m.stl, 'model/stl');
+  if (m.pieces.length === 1) {
+    download(stlFileName(m), m.pieces[0].stl, 'model/stl');
+    return;
+  }
+  const zip = core.zipFiles(m.pieces.map((p) => ({ name: printFileName(m, 'stl', p.name), data: new Uint8Array(p.stl) })));
+  download(stlFileName(m), zip, 'application/zip');
 });
 
 $('print-kml').addEventListener('click', () => {
   const m = state.model;
   if (!m) return;
+  const triangles = m.pieces.reduce((s, p) => s + new DataView(p.stl).getUint32(80, true), 0);
   const kml = core.printKml({
     centre: m.centre,
     set: m.set,
-    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.scaled.lowM, highM: m.scaled.highM, reliefMm: m.scaled.reliefMm, triangles: new DataView(m.stl).getUint32(80, true), buildings: m.buildings, label: m.label },
-    stlFile: printFileName(m, 'stl'),
+    // a set's label differs piece to piece, so only a print in one piece keeps it
+    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.lowM, highM: m.highM, reliefMm: m.reliefMm, triangles, buildings: m.buildings, label: m.pieces.length === 1 ? m.pieces[0].label : null },
+    stlFile: stlFileName(m),
   });
   download(printFileName(m, 'kml'), kml, 'application/vnd.google-earth.kml+xml');
 });
@@ -1368,8 +1509,10 @@ function choose(id, value, label) {
 $('print-map').addEventListener('click', async () => {
   const layer = map.hasLayer(streets) ? streets : topo;
   const set = printSettings();
-  const frame = core.printFrame(state.print, set.sideKm, set.widthMm, set.bearing);
-  const b = frame.bounds;
+  // A set of pieces is one image of the whole set, from the frame its pieces share.
+  const plan = core.piecePlan(state.print, set), frame = plan.frame;
+  const lowY = plan.bottomMm, highY = plan.bottomMm + plan.downMm, W = plan.acrossMm;
+  const b = core.lonLatBounds([[0, lowY], [W, lowY], [W, highY], [0, highY]].map(([x, y]) => frame.toLonLat(x, y)));
   const z = core.mapImageZoom(b, layer.options.maxZoom);
   const box = core.pixelBox(b, z);
   $('print-map').disabled = true;
@@ -1385,9 +1528,8 @@ $('print-map').addEventListener('click', async () => {
       progress('print', `Fetching the map: tile ${++done} of ${box.tiles.length}`, done / box.tiles.length);
     })));
     // Where the model's corners fall among the tiles: its top left, top right and bottom left.
-    const W = set.widthMm;
     const at = (x, y) => { const g = frame.toLonLat(x, y), p = core.lonLatToTile(g.lon, g.lat, z); return [p.x * 256 - box.left, p.y * 256 - box.top]; };
-    const [o, u, v] = [at(0, W), at(W, W), at(0, 0)];
+    const [o, u, v] = [at(0, highY), at(W, highY), at(0, lowY)];
     const w = Math.round(Math.hypot(u[0] - o[0], u[1] - o[1])), h = Math.round(Math.hypot(v[0] - o[0], v[1] - o[1]));
     const canvas = new OffscreenCanvas(w, h);
     const ctx = canvas.getContext('2d');
@@ -1462,6 +1604,9 @@ $('print-file').addEventListener('change', async () => {
   choose('print-corner', set.cornerMm, set.cornerMm ? `Rounded ${set.cornerMm} mm` : 'Square');
   $('print-shape').value = set.shape;
   choose('print-aspect', set.aspect, `${set.aspect} : 1`);
+  const layout = `${set.cols}x${set.rows}`;
+  if (![...$('print-pieces').options].some((o) => o.value === layout)) $('print-pieces').append(new Option(`${set.cols} × ${set.rows}`, layout));
+  $('print-pieces').value = layout;
   $('print-turn').value = String(Math.max(-90, Math.min(90, set.bearing)));
   showShapeControls();
   $('print-buildings').value = set.buildings ? 'osm' : 'none';
