@@ -193,6 +193,9 @@ thead th { font: 600 12px var(--f-display); letter-spacing: 0.08em; text-transfo
 td { font: 13px var(--f-data); font-variant-numeric: tabular-nums; }
 td:first-child { font-family: var(--f-body); color: var(--ink-2); }
 td.none { color: var(--ink-3); }
+/* the print table is a list of facts, some a sentence long: they wrap beside their headings */
+#print-table td { white-space: normal; text-align: left; vertical-align: top; }
+#print-table td:first-child { white-space: nowrap; width: 1%; }
 
 /* map furniture */
 .leaflet-container { font: 13px var(--f-body); }
