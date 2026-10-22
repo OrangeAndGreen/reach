@@ -733,6 +733,21 @@ export function withStop(stops, value) {
 }
 
 /**
+ * The height stretch suggested for ground with reliefM of land (sea level up)
+ * across sideKm, as a stop, or null with no land relief. The model's width
+ * cancels out: what shows is relief against the ground across. Full stretch to
+ * a set steepness would make flat ground a cartoon, so it takes the square
+ * root, as raised-relief maps stretch big flat areas more but not in full.
+ * 0.18 gives Mt Washington's 20 km its x1.5, Boston's 20 km about x6 and the
+ * Alps across 100 km about x2.25; it stays within x1 to x20.
+ */
+export function suggestStretch(reliefM, sideKm) {
+  if (!(reliefM > 0) || !(sideKm > 0)) return null;
+  const want = Math.min(20, Math.max(1, Math.sqrt(0.18 / (reliefM / (sideKm * 1000)))));
+  return STRETCH_STOPS.reduce((a, b) => (Math.abs(b - want) < Math.abs(a - want) ? b : a));
+}
+
+/**
  * A lon/lat box in global pixels at zoom z (256 per tile), and the tiles that
  * cover it, each with its own top-left in the same pixels. Tile x wraps across
  * the date line; left keeps the unwrapped position so tiles still line up.
