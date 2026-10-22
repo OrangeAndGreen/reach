@@ -897,6 +897,7 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ['bearingDeg', 'Top of the model faces (degrees clockwise from north)', set.bearing ?? 0],
     ['buildings', 'Buildings from OpenStreetMap (1 yes, 0 no)', set.buildings ? 1 : 0],
     ['buildingDefaultM', 'Building height where OSM has none (m)', set.buildingDefaultM ?? DEFAULT_BUILDING_M],
+    ['roads', 'Motorway, trunk and primary roads from OpenStreetMap, raised (1 yes, 0 no)', set.roads ? 1 : 0],
     ['piecesAcross', 'Pieces across (each one model width)', cols],
     ['piecesDown', 'Pieces down', rows],
   ];
@@ -942,6 +943,13 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
         ['tallestBuildingM', 'Tallest building (m)', Math.round(b.tallestM)],
         ...(b.liftM != null ? [['groundLiftM', 'Ground under buildings above the open ground near them (m)', +b.liftM.toFixed(1)]] : []),
         ['buildingSource', 'Building data', `OpenStreetMap contributors (ODbL), read ${b.readAt}`],
+      );
+    }
+    if (model.roads) {
+      const r = model.roads;
+      derived.push(
+        ...Object.keys(ROAD_CLASSES).map((cls) => [`${cls}Km`, `${cls[0].toUpperCase()}${cls.slice(1)} roads printed (km)`, +(r.km[cls] || 0).toFixed(1)]),
+        ['roadSource', 'Road data', `OpenStreetMap contributors (ODbL), read ${r.readAt}`],
       );
     }
   }
@@ -1045,6 +1053,8 @@ export function parsePrintKml(text) {
       // files from before buildings have none
       buildings: values.buildings === '1',
       buildingDefaultM: values.buildingDefaultM == null ? DEFAULT_BUILDING_M : num('buildingDefaultM', 1, 100),
+      // files from before roads have none
+      roads: values.roads === '1',
       // files from before pieces are one piece
       cols: values.piecesAcross == null ? 1 : Math.round(num('piecesAcross', 1, PIECES_MAX)),
       rows: values.piecesDown == null ? 1 : Math.round(num('piecesDown', 1, PIECES_MAX)),
@@ -2262,6 +2272,187 @@ export function buildingTriangles(buildings, zMm, n, { widthMm, toMm, mmPerMetre
     // A sliver with no area closes no way at all, and is left out.
     const solid = [rings, [rings[0]], [convexHull(rings[0])]].map((r) => prism(r, bottom, top)).find(isClosed) || [];
     for (const p of solid) tris.push(p);
+  }
+  return tris;
+}
+
+// ---------- roads ----------
+
+/**
+ * The road classes printed, biggest first, each with its width and lift on the
+ * model. A 30 m motorway is 0.36 mm across at 10 km on 120 mm, under the
+ * nozzle, so widths are set on the model rather than the ground; widthM is a
+ * real carriageway, which takes over on prints small enough for it to be wider.
+ */
+export const ROAD_CLASSES = {
+  motorway: { widthMm: 1.6, liftMm: 1.2, widthM: 25 },
+  trunk: { widthMm: 1.2, liftMm: 0.8, widthM: 20 },
+  primary: { widthMm: 0.8, liftMm: 0.4, widthM: 14 },
+};
+/** Roads come from OpenStreetMap only on prints this size across or smaller: past it the query is too big. */
+export const ROADS_MAX_KM = 25;
+/** A road's top follows the ground averaged over this far either way along it (mm on the model), so it reads as graded. */
+export const ROAD_SMOOTH_MM = 1.5;
+
+/** The Overpass query for every motorway, trunk and primary road in a lon/lat box, with its line. */
+export function overpassRoadsQuery(b) {
+  const box = [b.south, b.west, b.north, b.east].map((v) => v.toFixed(6)).join(',');
+  return `[out:json][timeout:90];way["highway"~"^(${Object.keys(ROAD_CLASSES).join('|')})$"](${box});out geom;`;
+}
+
+/**
+ * Lines that meet end to end joined into longer ones, either way round.
+ * Points are [x, y] pairs matched exactly. Where three or more lines meet,
+ * which two join is the first found.
+ */
+export function joinLines(lines) {
+  const same = (a, b) => a[0] === b[0] && a[1] === b[1];
+  const left = lines.filter((l) => l.length > 1).map((l) => l.slice());
+  const out = [];
+  while (left.length) {
+    let line = left.shift();
+    for (;;) {
+      const head = line[0], end = line[line.length - 1];
+      if (same(head, end)) break; // a loop
+      const k = left.findIndex((l) => same(l[0], end) || same(l[l.length - 1], end) || same(l[0], head) || same(l[l.length - 1], head));
+      if (k < 0) break;
+      const [l] = left.splice(k, 1);
+      if (same(l[0], end)) line = line.concat(l.slice(1));
+      else if (same(l[l.length - 1], end)) line = line.concat(l.slice(0, -1).reverse());
+      else if (same(l[l.length - 1], head)) line = l.slice(0, -1).concat(line);
+      else line = l.slice(1).reverse().concat(line);
+    }
+    out.push(line);
+  }
+  return out;
+}
+
+/**
+ * A line cut to a convex polygon running counter-clockwise (Cyrus-Beck on
+ * each segment), as the runs of it inside.
+ */
+export function clipLine(line, clip) {
+  const runs = [];
+  let run = null;
+  for (let s = 0; s + 1 < line.length; s++) {
+    const p = line[s], q = line[s + 1];
+    let t0 = 0, t1 = 1;
+    for (let k = 0; k < clip.length && t0 <= t1; k++) {
+      const a = clip[k], b = clip[(k + 1) % clip.length];
+      const side = (r) => (b[0] - a[0]) * (r[1] - a[1]) - (b[1] - a[1]) * (r[0] - a[0]); // 0 or more on the inside
+      const sp = side(p), sq = side(q);
+      if (sp < 0 && sq < 0) t1 = -1;
+      else if (sp < 0) t0 = Math.max(t0, sp / (sp - sq));
+      else if (sq < 0) t1 = Math.min(t1, sp / (sp - sq));
+    }
+    if (t0 > t1) { run = null; continue; }
+    const at = (t) => [p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])];
+    if (!run || t0 > 0) { run = [at(t0)]; runs.push(run); }
+    run.push(at(t1));
+    if (t1 < 1) run = null;
+  }
+  return runs.map((r) => r.filter((p, i) => !i || Math.hypot(p[0] - r[i - 1][0], p[1] - r[i - 1][1]) > 1e-6)).filter((r) => r.length > 1);
+}
+
+/** A line's length. */
+export const lineLength = (line) => line.reduce((s, p, i) => (i ? s + Math.hypot(p[0] - line[i - 1][0], p[1] - line[i - 1][1]) : 0), 0);
+
+/**
+ * Motorway, trunk and primary roads from an Overpass reply, in model
+ * millimetres (x east, y north, the square's south-west corner at 0,0) and
+ * cut to the square, as { cls, line }. Ways of a class that meet end to end
+ * are joined first, so a road is one solid rather than a string of them.
+ * Tunnels and covered roads are left out; ramps (the _link classes) aren't
+ * asked for. frame and pieces place and cut them as buildingFootprints does.
+ */
+export function roadLines(osm, bounds, widthMm, { frame = null, pieces = null } = {}) {
+  const toMm = frame ? (g) => frame.toMm(g.lon, g.lat) : (g) => [((g.lon - bounds.west) / (bounds.east - bounds.west)) * widthMm,
+    ((g.lat - bounds.south) / (bounds.north - bounds.south)) * widthMm];
+  const clips = pieces || [[[0, 0], [widthMm, 0], [widthMm, widthMm], [0, widthMm]]];
+  const byClass = new Map(Object.keys(ROAD_CLASSES).map((c) => [c, []]));
+  for (const el of osm.elements || []) {
+    const tags = el.tags || {};
+    if (el.type !== 'way' || !byClass.has(tags.highway) || !el.geometry) continue;
+    if ((tags.tunnel && tags.tunnel !== 'no') || tags.covered === 'yes' || tags.area === 'yes') continue;
+    byClass.get(tags.highway).push(el.geometry.map(toMm));
+  }
+  const out = [];
+  for (const [cls, ways] of byClass) {
+    for (const line of joinLines(ways)) {
+      for (const clip of clips) {
+        for (const run of clipLine(line, clip)) if (lineLength(run) >= ROAD_CLASSES[cls].widthMm) out.push({ cls, line: run });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Each road as its own closed solid, as STL triangles (three points each) to
+ * add to the terrain's: a ribbon its class's width, whose top is the ground
+ * along it, averaged over ROAD_SMOOTH_MM either way, plus its class's lift,
+ * and whose floor sits just under the lowest terrain beneath it, so nothing
+ * floats. The top stays at least 0.2 mm over the terrain under it, so a road
+ * in a cutting still shows. zMm is the terrain in mm (row 0 north); mmPerMetre
+ * is model mm per metre of ground across (both from printHeights).
+ */
+export function roadTriangles(roads, zMm, n, { widthMm, mmPerMetre }) {
+  const step = widthMm / (n - 1);
+  // the lowest and highest corner of the grid cell under a point: the terrain over the cell lies between
+  const cellSpan = (x, y) => {
+    const i = Math.max(0, Math.min(n - 2, Math.floor(x / step))), j = Math.max(0, Math.min(n - 2, Math.floor(n - 1 - y / step)));
+    const zs = [zMm[j * n + i], zMm[j * n + i + 1], zMm[(j + 1) * n + i], zMm[(j + 1) * n + i + 1]];
+    return [Math.min(...zs), Math.max(...zs)];
+  };
+  const dir = (a, b) => { const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1; return [dx / l, dy / l]; };
+  const tris = [];
+  for (const { cls, line } of roads) {
+    const { widthMm: classMm, liftMm, widthM } = ROAD_CLASSES[cls];
+    const half = Math.max(classMm, widthM * mmPerMetre) / 2;
+    // points at most a grid step apart, keeping the line's own corners
+    const pts = [line[0]];
+    for (let k = 1; k < line.length; k++) {
+      const [ax, ay] = line[k - 1], [bx, by] = line[k];
+      const parts = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / step));
+      for (let s = 1; s <= parts; s++) pts.push([ax + ((bx - ax) * s) / parts, ay + ((by - ay) * s) / parts]);
+    }
+    const m = pts.length;
+    if (m < 2) continue;
+    const along = [0];
+    for (let k = 1; k < m; k++) along.push(along[k - 1] + Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]));
+    const ground = pts.map(([x, y]) => gridAt(zMm, n, widthMm, x, y));
+    const sections = [];
+    let lo = 0, hi = 0, sum = 0;
+    for (let k = 0; k < m; k++) {
+      // the ground averaged over ROAD_SMOOTH_MM either way, as a sliding window
+      while (hi < m && along[hi] <= along[k] + ROAD_SMOOTH_MM) sum += ground[hi++];
+      while (along[lo] < along[k] - ROAD_SMOOTH_MM) sum -= ground[lo++];
+      const smooth = sum / (hi - lo);
+      // the point's left is square to the mean of the directions either side, pushed out at a bend so the sides stay parallel
+      const d0 = dir(pts[Math.max(0, k - 1)], pts[k === 0 ? 1 : k]), d1 = dir(pts[k === m - 1 ? m - 2 : k], pts[Math.min(m - 1, k + 1)]);
+      let tx = d0[0] + d1[0], ty = d0[1] + d1[1];
+      const tl = Math.hypot(tx, ty);
+      if (tl < 1e-9) [tx, ty] = d1; else { tx /= tl; ty /= tl; }
+      const miter = 1 / Math.max(0.5, tx * d1[0] + ty * d1[1]); // at most twice out, at a hairpin
+      const ox = -ty * half * miter, oy = tx * half * miter;
+      const [x, y] = pts[k];
+      const L = [x + ox, y + oy], R = [x - ox, y - oy];
+      const spans = [cellSpan(x, y), cellSpan(...L), cellSpan(...R)];
+      const bottom = Math.max(0, Math.min(...spans.map((s) => s[0])) - 0.2);
+      const top = Math.max(smooth + liftMm, Math.max(...spans.map((s) => s[1])) + 0.2, bottom + 0.4);
+      // counter-clockwise looking back along the road: top left, top right, bottom right, bottom left
+      sections.push([[L[0], L[1], top], [R[0], R[1], top], [R[0], R[1], bottom], [L[0], L[1], bottom]]);
+    }
+    for (let k = 0; k + 1 < m; k++) {
+      const a = sections[k], b = sections[k + 1];
+      for (let r = 0; r < 4; r++) {
+        const r1 = (r + 1) % 4;
+        tris.push(a[r], a[r1], b[r1], a[r], b[r1], b[r]);
+      }
+    }
+    const s0 = sections[0], s1 = sections[m - 1];
+    tris.push(s0[0], s0[2], s0[1], s0[0], s0[3], s0[2]); // the start, facing back
+    tris.push(s1[0], s1[1], s1[2], s1[0], s1[2], s1[3]); // the end, facing on
   }
   return tris;
 }

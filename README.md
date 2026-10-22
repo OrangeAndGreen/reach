@@ -18,7 +18,7 @@ Three tools on one map:
   Central Park. On the map, drag the centre dot to move it or the outline to
   resize it: the shape grows about its centre, a rectangle's side moves alone,
   and sizes snap to 10 m, 100 m or 1 km as they grow. On prints of 2 km or less across it can raise the buildings
-  from OpenStreetMap too. Choose the model width (the shape's width across), the detail, a height stretch and
+  from OpenStreetMap too, and on prints of 25 km or less the main roads, raised. Choose the model width (the shape's width across), the detail, a height stretch and
   the base thickness, and whether the sea floor comes too (down to 50 m, 200 m,
   1,000 m or all the way, with its own depth stretch), and whether to mark the
   shoreline with a groove or a ridge (0.4 or 0.8 mm) to paint or just to see the coast by. It can also cut a label 0.6 mm up into the underside, mirrored so it reads when you turn the print over: the centre's coordinates, the ground covered and the height stretch (and the depth stretch, when the sea floor has its own), under an arrow pointing north, with up to three lines of your own text between the arrow and them, or your text alone. The corners are rounded, 5 mm by default (or 10 mm, or square), so a wide slab is slower to lift off the bed: a square's ground is squeezed into the curve, another shape's is cut off along it, and a star rounds only its points. A preview you can turn shows the model, beside its real
@@ -67,7 +67,7 @@ ES modules, which is why it needs the little server rather than file://.
 | Road times | OSRM public demo server, `table` service | fair use: a run is 4 to 11 calls of 300 points, 0.7 s apart, and is cached in the browser |
 | Place search | Open-Meteo geocoding | the same service Goldilocks uses |
 | Map click names | Nominatim reverse geocoding | one call per click |
-| Buildings | OpenStreetMap through the Overpass API | one call per print square, kept for the session; © OpenStreetMap contributors, ODbL |
+| Buildings, roads | OpenStreetMap through the Overpass API | one call each per print, kept for the session; © OpenStreetMap contributors, ODbL |
 
 - **Height** reads every DEM pixel within the radius at the most detailed zoom
   that stays under 160 tiles. Then it re-reads each step of the
@@ -127,6 +127,15 @@ ES modules, which is why it needs the little server rather than file://.
   as its convex hull. Footprints under 0.4 mm² on the model are left out. Roofs on posts
   (`building=roof`) and underground buildings are skipped. A 2 km square of
   Manhattan is about 3,000 buildings and a 9 MB STL.
+- **Roads.** Motorway, trunk and primary ways, joined end to end per class,
+  each become their own closed solid: a ribbon 1.6, 1.2 or 0.8 mm wide (or the
+  real carriageway, 25, 20 or 14 m, where a small print makes that wider),
+  whose top is the ground along it averaged over 1.5 mm either way plus a lift
+  of 1.2, 0.8 or 0.4 mm, and whose floor sits just under the terrain. Tunnels
+  drop out and ramps aren't fetched. Where solids cross, the slicer merges
+  them. Classes are as OSM tags them: Chicago's arterials (Cermak, Roosevelt,
+  Michigan Avenue) are secondary, so a 10 km Loop print shows only its
+  expressways and Lake Shore Drive.
 - **Buildings already in the elevation data.** Mostly they aren't: at the
   print zooms the tiles are bare earth under the buildings OSM maps in
   Manhattan, Sunny Isles Beach, Midtown Miami and Dubai Marina. The tall
