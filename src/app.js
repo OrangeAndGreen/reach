@@ -711,6 +711,7 @@ function printSettings() {
     bearing: Number($('print-turn').value),
     buildings: $('print-buildings').value === 'osm' && Number($('print-side').value) <= core.BUILDINGS_MAX_KM,
     buildingDefaultM: Number($('print-default').value),
+    roads: $('print-roads').value === 'osm' && Number($('print-side').value) <= core.ROADS_MAX_KM,
     cols,
     rows,
   };
@@ -956,9 +957,8 @@ async function readPrintGrid(frame, centre, set, z, run, what) {
 }
 
 const osmCache = new Map();
-/** Every building in a lon/lat box from OpenStreetMap, through Overpass. Kept for the session. */
-function osmBuildings(bounds) {
-  const query = core.overpassBuildingsQuery(bounds);
+/** An Overpass query's reply from OpenStreetMap, as { osm, readAt }. Kept for the session. */
+function overpass(query) {
   if (!osmCache.has(query)) {
     const p = (async () => {
       const res = await fetch(OVERPASS, { method: 'POST', body: new URLSearchParams({ data: query }) });
@@ -999,9 +999,20 @@ async function buildModel() {
       status('print', 'Fetching the buildings from OpenStreetMap…');
       const corner = plan.pieces.flatMap(({ frame: { bounds: b } }) => [{ lon: b.west, lat: b.south }, { lon: b.east, lat: b.north }]);
       try {
-        reply = await osmBuildings(core.lonLatBounds(corner));
+        reply = await overpass(core.overpassBuildingsQuery(core.lonLatBounds(corner)));
       } catch (err) {
         missed = ` Couldn't fetch the buildings (${err.message}), so this is the terrain alone.`;
+      }
+      if (run !== modelRun) return;
+    }
+    let roadReply = null;
+    if (set.roads) {
+      status('print', 'Fetching the roads from OpenStreetMap…');
+      const corner = plan.pieces.flatMap(({ frame: { bounds: b } }) => [{ lon: b.west, lat: b.south }, { lon: b.east, lat: b.north }]);
+      try {
+        roadReply = await overpass(core.overpassRoadsQuery(core.lonLatBounds(corner)));
+      } catch (err) {
+        missed += ` Couldn't fetch the roads (${err.message}), so the print has none.`;
       }
       if (run !== modelRun) return;
     }
@@ -1039,6 +1050,15 @@ async function buildModel() {
       if (shore) scaled.mm = core.markShore(scaled.mm, shore, set.shoreMm, set.shoreRidge);
       const extra = placed ? core.buildingTriangles(placed.buildings, scaled.mm, n, { ...pieceSet, ...scaled }) : [];
       if (buildings) buildings.triangles = extra.length / 3;
+      let roads = null;
+      if (roadReply) {
+        const lines = core.roadLines(roadReply.osm, piece.frame.bounds, set.widthMm, { frame: piece.frame, pieces: outline?.pieces });
+        const roadTris = core.roadTriangles(lines, scaled.mm, n, { ...pieceSet, ...scaled });
+        for (const p of roadTris) extra.push(p);
+        const km = {};
+        for (const { cls, line } of lines) km[cls] = (km[cls] || 0) + core.lineLength(line) / scaled.mmPerMetre / 1000;
+        roads = { count: lines.length, km, triangles: roadTris.length / 3, readAt: roadReply.readAt };
+      }
       const { lines, wrap } = core.labelLines(centre, set, split ? piece.name : null);
       const label = lines.length ? core.bottomLabel(lines, scaled.mm, n, set.widthMm, outline, set.bearing, wrap) : null;
       const cutLabel = label?.why ? null : label;
@@ -1050,12 +1070,13 @@ async function buildModel() {
       } else {
         stl = core.terrainStl(scaled.mm, n, set.widthMm, extra, cutLabel, set.cornerMm, split ? piece.corners : null);
       }
-      return { name: piece.name, col: piece.col, row: piece.row, corners: piece.corners, stl, top, outline, scaled, set: pieceSet, buildings, shore, label };
+      return { name: piece.name, col: piece.col, row: piece.row, corners: piece.corners, stl, top, outline, scaled, set: pieceSet, buildings, roads, shore, label };
     });
     state.model = {
       set, centre, plan, pieces, zoom: z, pixel, seaZoom, seaPixel: seaZoom == null ? null : core.pixelMetres(centre.lat, seaZoom),
       lowM, highM: Math.max(...pieces.map((p) => p.scaled.highM)), reliefMm: Math.max(...pieces.map((p) => p.scaled.reliefMm)),
       buildings: sumBuildings(pieces),
+      roads: sumRoads(pieces),
     };
     showPieceChoice();
     showModel();
@@ -1099,6 +1120,15 @@ function sumBuildings(pieces) {
   };
 }
 
+/** The roads of every piece together, or null without them. */
+function sumRoads(pieces) {
+  const all = pieces.map((p) => p.roads).filter(Boolean);
+  if (!all.length) return null;
+  const km = {};
+  for (const r of all) for (const [cls, v] of Object.entries(r.km)) km[cls] = (km[cls] || 0) + v;
+  return { count: all.reduce((s, r) => s + r.count, 0), km, triangles: all.reduce((s, r) => s + r.triangles, 0), readAt: all[0].readAt };
+}
+
 /** The preview's piece list: the whole set, then each piece. Hidden for a print in one piece. */
 function showPieceChoice() {
   const el = $('print-view'), { pieces } = state.model;
@@ -1115,6 +1145,7 @@ function sideChanged() {
   lastSide = $('print-side').value;
   drawPrintSquare(true);
   showBuildingControls();
+  showRoadControls();
   buildModel();
 }
 function addSide(km, label, dragged) {
@@ -1243,6 +1274,16 @@ function showBuildingControls() {
 }
 $('print-buildings').addEventListener('change', () => { showBuildingControls(); buildModel(); });
 showBuildingControls();
+function showRoadControls() {
+  const fits = Number($('print-side').value) <= core.ROADS_MAX_KM;
+  const c = core.ROAD_CLASSES;
+  $('print-roads-hint').hidden = $('print-roads').value !== 'osm';
+  $('print-roads-hint').textContent = fits
+    ? `Each motorway, trunk and primary road is its own solid standing on the ground, ${c.motorway.widthMm}, ${c.trunk.widthMm} and ${c.primary.widthMm} mm wide and raised ${c.motorway.liftMm}, ${c.trunk.liftMm} and ${c.primary.liftMm} mm, its top smoothed along it. Tunnels and ramps are left out.`
+    : `Roads need a print of ${core.ROADS_MAX_KM} km or less across, so this one has none.`;
+}
+$('print-roads').addEventListener('change', () => { showRoadControls(); buildModel(); });
+showRoadControls();
 
 // Enlarged, the preview moves into the map's place (the whole screen on a phone),
 // and the settings stay beside it. Its ResizeObserver sizes the view to fit.
@@ -1333,7 +1374,7 @@ function previewGeometry(m) {
   const step = w + PREVIEW_GAP_MM;
   const parts = m.pieces.map((p) => {
     const q = lite >= n ? p : {
-      ...p, top: 2 * (lite - 1) ** 2, set: { ...p.set, cells: lite }, shore: null, label: null, buildings: null,
+      ...p, top: 2 * (lite - 1) ** 2, set: { ...p.set, cells: lite }, shore: null, label: null, buildings: null, roads: null,
       stl: core.terrainStl(core.resampleGrid(p.scaled.mm, n, lite), lite, w, [], null, p.set.cornerMm, p.corners),
     };
     return { ...pieceGeometry(q), x: p.col * step, y: (rows - 1 - p.row) * step };
@@ -1365,18 +1406,19 @@ function pieceGeometry(m) {
     for (let v = 0; v < 3; v++) for (let k = 0; k < 3; k++) nrm[t * 9 + v * 3 + k] = view.getFloat32(o + k * 4, true);
   }
   // The sea floor in blue: top-surface vertices below sea level (the top comes first in the STL).
-  // The shoreline line dark, and buildings, written last, in grey.
+  // The shoreline line dark, buildings, written next to last, in grey, and roads, written last, darker.
   const colours = new Float32Array(count * 9);
-  const land = new THREE.Color(0xc9b79c), sea = new THREE.Color(0x6f9bc7), built = new THREE.Color(0x9a9da3), groove = new THREE.Color(0x4a3f33);
+  const land = new THREE.Color(0xc9b79c), sea = new THREE.Color(0x6f9bc7), built = new THREE.Color(0x9a9da3), groove = new THREE.Color(0x4a3f33), road = new THREE.Color(0x55595f);
   const n = m.set.cells, step = m.set.widthMm / (n - 1);
   const topVertices = m.top * 3;
-  const firstBuilt = (count - (m.buildings?.triangles || 0)) * 3;
+  const firstRoad = (count - (m.roads?.triangles || 0)) * 3;
+  const firstBuilt = firstRoad - (m.buildings?.triangles || 0) * 3;
   const onShore = (v) => m.shore[(n - 1 - Math.round(pos[v * 3 + 1] / step)) * n + Math.round(pos[v * 3] / step)];
   // a label pocket: a triangle with no point above the pocket's depth, and one off the bed
   const depth = m.label?.depthMm;
   const inPocket = (t) => depth && [0, 1, 2].every((k) => pos[(t * 3 + k) * 3 + 2] <= depth + 1e-4) && [0, 1, 2].some((k) => pos[(t * 3 + k) * 3 + 2] > 1e-4);
   for (let v = 0; v < count * 3; v++) {
-    const c = v >= firstBuilt ? built
+    const c = v >= firstRoad ? road : v >= firstBuilt ? built
       : (m.shore && v < topVertices && onShore(v)) || (v >= topVertices && inPocket(Math.floor(v / 3))) ? groove
       : m.scaled.seaMm != null && v < topVertices && pos[v * 3 + 2] < m.scaled.seaMm - 1e-3 ? sea : land;
     colours[v * 3] = c.r; colours[v * 3 + 1] = c.g; colours[v * 3 + 2] = c.b;
@@ -1414,6 +1456,7 @@ function renderPrintTable() {
     ...(set.shoreMm > 0 ? [['Shoreline', shoreText(set, pieces.some((p) => p.shore.includes(1)))]] : []),
     ...(first.label ? [['Label underneath', `${split ? `On ${first.name}: ` : ''}${labelText(first.label)}`]] : []),
     ...(m.buildings ? [['Buildings', buildingsText(m)]] : []),
+    ...(m.roads ? [['Roads', roadsText(m.roads)]] : []),
     ['STL', `${split ? `${pieces.length} files in one ZIP, ` : ''}${stlMb.toFixed(1)} MB, ${triangles.toLocaleString('en-US')} triangles`],
   ];
   $('print-table').innerHTML = `<tbody>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</tbody>`;
@@ -1472,6 +1515,13 @@ function buildingsText({ buildings: b, set }) {
   return parts.join('; ');
 }
 
+function roadsText(r) {
+  if (!r.count) return 'No motorway, trunk or primary road in OpenStreetMap here';
+  const length = (km) => (state.units === 'imperial' ? `${(km / 1.609344).toFixed(1)} mi` : `${km.toFixed(1)} km`);
+  return Object.entries(core.ROAD_CLASSES).filter(([cls]) => r.km[cls])
+    .map(([cls, c]) => `${cls} ${length(r.km[cls])}, ${c.widthMm} mm wide, ${c.liftMm} mm up`).join('; ');
+}
+
 /** A print's file name; a set of pieces adds its layout, and one piece of it its name. */
 function printFileName(m, ext, piece = '') {
   const slug = m.centre.name.split(',')[0].toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'print';
@@ -1502,7 +1552,7 @@ $('print-kml').addEventListener('click', () => {
     centre: m.centre,
     set: m.set,
     // a set's label differs piece to piece, so only a print in one piece keeps it
-    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.lowM, highM: m.highM, reliefMm: m.reliefMm, triangles, buildings: m.buildings, label: m.pieces.length === 1 ? m.pieces[0].label : null },
+    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.lowM, highM: m.highM, reliefMm: m.reliefMm, triangles, buildings: m.buildings, roads: m.roads, label: m.pieces.length === 1 ? m.pieces[0].label : null },
     stlFile: stlFileName(m),
   });
   download(printFileName(m, 'kml'), kml, 'application/vnd.google-earth.kml+xml');
@@ -1640,6 +1690,8 @@ $('print-file').addEventListener('change', async () => {
   $('print-buildings').value = set.buildings ? 'osm' : 'none';
   choose('print-default', set.buildingDefaultM, core.formatHeight(set.buildingDefaultM, state.units));
   showBuildingControls();
+  $('print-roads').value = set.roads ? 'osm' : 'none';
+  showRoadControls();
   setPrintCentre(centre);
   status('print', `Opened ${file.name}. Building the same model.`);
 });

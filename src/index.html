@@ -306,6 +306,13 @@
             <option value="10">3 floors (10 m)</option>
           </select>
         </div>
+        <div class="field">
+          <label for="print-roads">Roads</label>
+          <select id="print-roads">
+            <option value="none" selected>None</option>
+            <option value="osm">Main roads, raised</option>
+          </select>
+        </div>
         <button id="print-run" class="primary">Build model</button>
       </div>
       <p id="print-sea-hint" class="hint" hidden>The sea floor comes from coarser tiles than the land (75 to 150 m per pixel, by latitude), so it prints softer. Lakes print as their flat surface.</p>
@@ -323,6 +330,7 @@
       <p id="print-pieces-hint" class="hint" hidden></p>
       <p id="print-corner-hint" class="hint">Rounded corners are slower to lift off the bed as the print cools. The ground within a corner is squeezed to fit, by up to 0.4 of the radius.</p>
       <p id="print-buildings-hint" class="hint" hidden></p>
+      <p id="print-roads-hint" class="hint" hidden></p>
       <div id="print-status" class="status" aria-live="polite"></div>
 
       <figure class="chart-wrap">
