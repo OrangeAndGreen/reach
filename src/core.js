@@ -898,7 +898,7 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ['buildings', 'Buildings from OpenStreetMap (1 yes, 0 no)', set.buildings ? 1 : 0],
     ['buildingDefaultM', 'Building height where OSM has none (m)', set.buildingDefaultM ?? DEFAULT_BUILDING_M],
     ['roads', 'Motorway, trunk and primary roads from OpenStreetMap, raised (1 yes, 0 no)', set.roads ? 1 : 0],
-    ['waterMm', 'Lakes and wide rivers from OpenStreetMap, sunk (mm, 0 for none)', set.waterMm ?? 0],
+    ['waterMm', 'Lakes and rivers from OpenStreetMap, sunk (mm, 0 for none)', set.waterMm ?? 0],
     ['piecesAcross', 'Pieces across (each one model width)', cols],
     ['piecesDown', 'Pieces down', rows],
   ];
@@ -956,6 +956,7 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     if (model.water) {
       derived.push(
         ['waterKm2', 'Lakes and rivers sunk (km²)', +model.water.km2.toFixed(2)],
+        ['riverKm', 'Narrow rivers cut as channels (km)', +(model.water.riverKm || 0).toFixed(1)],
         ['waterSource', 'Water data', `OpenStreetMap contributors (ODbL), read ${model.water.readAt}`],
       );
     }
@@ -2481,10 +2482,10 @@ export const WATER_MIN_MM2 = 4;
 export const WATER_REACH = 2;
 const NOT_WATER = new Set(['wastewater']);
 
-/** The Overpass query for every lake, pond, reservoir and river area in a lon/lat box, or in any of a list of them, with its outline. */
+/** The Overpass query for every lake, pond, reservoir and river area, and every river line, in a lon/lat box, or in any of a list of them, with its outline. */
 export function overpassWaterQuery(b) {
   const parts = overpassBoxes(b).map((box) => ['natural"="water', 'waterway"="riverbank']
-    .map((tag) => `way["${tag}"](${box});relation["${tag}"]["type"="multipolygon"](${box});`).join(''));
+    .map((tag) => `way["${tag}"](${box});relation["${tag}"]["type"="multipolygon"](${box});`).join('') + `way["waterway"="river"](${box});`);
   return `[out:json][timeout:90];(${parts.join('')});out geom;`;
 }
 
@@ -2517,10 +2518,18 @@ export function waterRings(el) {
  * Lake Michigan comes back for a print on its shore), and each cell keeps only
  * its own piece of it. A ring cut to a cell still fills even-odd as the whole
  * did within the cell, so the pieces of every cell together are the area.
+ * A river line is kept whole in every cell it may cross, as
+ * { type: 'river', id, line }, since its level runs along it from the source.
  */
 export function waterByCell(osm, cells, z) {
   const out = new Map(cells.map((c) => [`${c.x}/${c.y}`, []]));
   for (const el of osm.elements || []) {
+    const line = riverLine(el);
+    if (line) {
+      const lb = lonLatBounds(line.map(([lon, lat]) => ({ lon, lat })));
+      for (const c of cellsForBounds(lb, z)) out.get(`${c.x}/${c.y}`)?.push({ type: 'river', id: `way${el.id}`, line });
+      continue;
+    }
     const rings = waterRings(el);
     if (!rings.length) continue;
     // by a loop, not lonLatBounds: a big lake's points are too many to spread into Math.min
@@ -2614,6 +2623,114 @@ export function carveWater(mm, water, n, depthMm, minMm = 0.6) {
     }
     return Math.max(Math.min(z, minMm), Math.min(z, low - depthMm));
   });
+}
+
+// ---------- narrow rivers ----------
+
+/** A river mapped only as a line is cut at least this wide (mm on the model), or its real width where a small print makes that wider. */
+export const RIVER_WIDTH_MM = 0.8;
+/** A river's width where OpenStreetMap gives none (m). */
+export const RIVER_WIDTH_M = 20;
+
+/**
+ * A river line's points from an OSM way, as [lon, lat, width m] in the way's
+ * own order, which OpenStreetMap draws downstream. Null for anything that
+ * isn't a river at the surface.
+ */
+export function riverLine(el) {
+  const tags = el.tags || {};
+  if (el.type !== 'way' || tags.waterway !== 'river' || !el.geometry || el.geometry.length < 2) return null;
+  if ((tags.tunnel && tags.tunnel !== 'no') || tags.covered === 'yes' || tags.location === 'underground') return null;
+  const w = parseFloat(tags.width);
+  const widthM = w > 0 && w < 5000 ? w : RIVER_WIDTH_M;
+  return el.geometry.map((p) => [p.lon, p.lat, widthM]);
+}
+
+/** The river lines of osm (from waterByCell) on the model, as [x mm, y mm, width m] points, downstream. */
+export function riverLines(osm, frame) {
+  return (osm.elements || []).filter((el) => el.type === 'river')
+    .map((el) => el.line.map(([lon, lat, w]) => [...frame.toMm(lon, lat), w]));
+}
+
+/**
+ * Cuts the rivers (from riverLines) into a millimetre grid (row 0 north) as
+ * channels: the grid points within half a river's width of its line, and
+ * the point nearest it all along, so the channel never breaks, sink to
+ * depthMm under the lowest ground the river has passed over since its
+ * source. So a channel only ever steps down, however the elevation data
+ * wobbles under it. Where rivers share a point (one joining another, or a
+ * river drawn in several ways), the lowest level reaching it goes on down
+ * each of them. Points in skip (the lakes and wide rivers, sunk on their own)
+ * and at or under sea level (heights in metres, at most 0) are left alone,
+ * and no point is left with less than minMm of model under it. Returns
+ * { mm, mask, km }: the new grid, a Uint8Array with a 1 for each point cut,
+ * and the length of river on the grid in km.
+ */
+export function carveRivers(mm, rivers, n, { widthMm, mmPerMetre, depthMm, skip = null, heights = null, minMm = 0.6 }) {
+  const step = widthMm / (n - 1);
+  const inside = (x, y) => x >= 0 && x <= widthMm && y >= 0 && y <= widthMm;
+  let lengthMm = 0;
+  // each line as samples at most half a grid step apart, so its nearest grid point moves at most one step each way between them
+  const lines = rivers.map((line) => {
+    const out = [];
+    for (let k = 0; k < line.length; k++) {
+      const [x, y, w] = line[k];
+      const half = Math.max(RIVER_WIDTH_MM, w * mmPerMetre) / 2;
+      out.push({ x, y, half, key: `${x},${y}` });
+      if (k + 1 === line.length) break;
+      const [bx, by] = line[k + 1], len = Math.hypot(bx - x, by - y);
+      const parts = Math.max(1, Math.ceil(len / (step / 2)));
+      for (let s = 1; s < parts; s++) out.push({ x: x + ((bx - x) * s) / parts, y: y + ((by - y) * s) / parts, half, key: null });
+      for (let s = 0; s < parts; s++) {
+        const t = (s + 0.5) / parts; // the length on the grid, measured a piece at a time
+        if (inside(x + (bx - x) * t, y + (by - y) * t)) lengthMm += len / parts;
+      }
+    }
+    for (const p of out) p.ground = inside(p.x, p.y) ? gridAt(mm, n, widthMm, p.x, p.y) : Infinity;
+    return out;
+  });
+  // The lowest level reaching each shared point, carried on until nothing lowers.
+  const level = new Map();
+  for (let pass = 0, changed = true; changed && pass < 100; pass++) {
+    changed = false;
+    for (const line of lines) {
+      let run = Infinity;
+      for (const p of line) {
+        if (p.key) { const l = level.get(p.key); if (l < run) run = l; }
+        if (p.ground < run) run = p.ground;
+        p.run = run;
+        if (p.key && !(level.get(p.key) <= run)) { level.set(p.key, run); changed = true; }
+      }
+    }
+  }
+  const bed = new Float64Array(n * n).fill(Infinity);
+  const put = (i, j, z) => {
+    if (i < 0 || i >= n || j < 0 || j >= n) return;
+    const k = j * n + i;
+    if (z < bed[k]) bed[k] = z;
+  };
+  for (const line of lines) {
+    let prev = null;
+    for (const p of line) {
+      if (!Number.isFinite(p.run) || !inside(p.x, p.y)) { prev = null; continue; }
+      const z = p.run - depthMm, gi = p.x / step, gj = n - 1 - p.y / step;
+      const ni = Math.round(gi), nj = Math.round(gj);
+      put(ni, nj, z);
+      if (prev && prev[0] !== ni && prev[1] !== nj) put(ni, prev[1], z); // a diagonal move, filled in so the channel stays 4-connected
+      prev = [ni, nj];
+      const r = p.half / step;
+      for (let j = Math.ceil(gj - r); j <= Math.floor(gj + r); j++) {
+        for (let i = Math.ceil(gi - r); i <= Math.floor(gi + r); i++) if (Math.hypot(i - gi, j - gj) <= r) put(i, j, z);
+      }
+    }
+  }
+  const out = mm.slice(), mask = new Uint8Array(n * n);
+  for (let k = 0; k < n * n; k++) {
+    if (!(bed[k] < Infinity) || skip?.[k] || (heights && !(heights[k] > 0))) continue;
+    out[k] = Math.max(Math.min(mm[k], minMm), Math.min(mm[k], bed[k]));
+    mask[k] = 1;
+  }
+  return { mm: out, mask, km: lengthMm / mmPerMetre / 1000 };
 }
 
 // ---------- zip ----------

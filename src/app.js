@@ -1038,12 +1038,13 @@ async function osmArea(kind, bounds, onFetch) {
   const keyOf = (c) => `${kind}/${z}/${c.x}/${c.y}`;
   const saved = await store.getMany('osm', cells.map(keyOf));
   const today = new Date().toISOString().slice(0, 10);
-  const missing = cells.filter((c, i) => !saved[i] || core.cellStale(saved[i].readAt, today));
+  // water cells kept from before river lines were fetched have none, so they are read again
+  const missing = cells.filter((c, i) => !saved[i] || core.cellStale(saved[i].readAt, today) || (kind === 'water' && !saved[i].rivers));
   if (missing.length) {
     onFetch?.();
     const { osm, readAt } = await overpass(OSM_QUERY[kind](core.cellBoxes(missing, z)));
     const parts = (kind === 'water' ? core.waterByCell : core.elementsByCell)(osm, missing, z);
-    const fresh = missing.map((c) => [keyOf(c), { elements: parts.get(`${c.x}/${c.y}`), readAt }]);
+    const fresh = missing.map((c) => [keyOf(c), { elements: parts.get(`${c.x}/${c.y}`), readAt, ...(kind === 'water' && { rivers: true }) }]);
     const got = new Map(fresh);
     cells.forEach((c, i) => { saved[i] = got.get(keyOf(c)) || saved[i]; });
     store.putMany('osm', fresh).then(showKept);
@@ -1159,9 +1160,12 @@ async function buildModel() {
       let water = null;
       if (waterReply) {
         const mask = core.waterPoints(waterReply.osm, heights, n, set.widthMm, piece.frame);
-        scaled.mm = core.carveWater(scaled.mm, mask, n, set.waterMm);
+        const rivers = core.carveRivers(scaled.mm, core.riverLines(waterReply.osm, piece.frame), n,
+          { widthMm: set.widthMm, mmPerMetre: scaled.mmPerMetre, depthMm: set.waterMm, skip: mask, heights });
+        scaled.mm = core.carveWater(rivers.mm, mask, n, set.waterMm);
         const cellKm = set.widthMm / (n - 1) / scaled.mmPerMetre / 1000;
-        water = { mask, km2: mask.reduce((s, v) => s + v, 0) * cellKm * cellKm, readAt: waterReply.readAt };
+        water = { mask, km2: mask.reduce((s, v) => s + v, 0) * cellKm * cellKm, riverKm: rivers.km, readAt: waterReply.readAt };
+        for (let k = 0; k < n * n; k++) if (rivers.mask[k]) mask[k] = 1; // blue in the preview too
       }
       const extra = placed ? core.buildingTriangles(placed.buildings, scaled.mm, n, { ...pieceSet, ...scaled }) : [];
       if (buildings) buildings.triangles = extra.length / 3;
@@ -1249,7 +1253,7 @@ function sumRoads(pieces) {
 function sumWater(pieces) {
   const all = pieces.map((p) => p.water).filter(Boolean);
   if (!all.length) return null;
-  return { km2: all.reduce((s, w) => s + w.km2, 0), readAt: all[0].readAt };
+  return { km2: all.reduce((s, w) => s + w.km2, 0), riverKm: all.reduce((s, w) => s + w.riverKm, 0), readAt: all[0].readAt };
 }
 
 /** The preview's piece list: the whole set, then each piece. Hidden for a print in one piece. */
@@ -1412,7 +1416,7 @@ function showWaterControls() {
   const fits = Number($('print-side').value) <= core.WATER_MAX_KM;
   $('print-water-hint').hidden = $('print-water').value === '0';
   $('print-water-hint').textContent = fits
-    ? `Lakes, ponds, reservoirs and rivers mapped as areas in OpenStreetMap are sunk ${$('print-water').value} mm under the lowest water near each point, so a lake prints as one flat level and a river steps down its valley. Islands stay land. Water under ${core.WATER_MIN_MM2} mm² on the model, and rivers mapped only as lines, are left out.`
+    ? `Lakes, ponds, reservoirs and rivers mapped as areas in OpenStreetMap are sunk ${$('print-water').value} mm under the lowest water near each point, so a lake prints as one flat level and a river steps down its valley. Islands stay land, and water under ${core.WATER_MIN_MM2} mm² on the model is left out. Rivers mapped only as lines are cut as channels at least ${core.RIVER_WIDTH_MM} mm wide, ${$('print-water').value} mm under the lowest ground upstream, so they never climb. Streams and canals are left out.`
     : `Lakes and rivers need a print of ${core.WATER_MAX_KM} km or less across, so this one has none.`;
 }
 $('print-water').addEventListener('change', () => { showWaterControls(); buildModel(); });
@@ -1659,9 +1663,12 @@ function roadsText(r) {
 }
 
 function waterText(m) {
-  if (m.water.km2 < 1e-9) return 'No lake or wide river in OpenStreetMap here, or none big enough to show';
-  const area = state.units === 'imperial' ? `${(m.water.km2 / 2.589988).toFixed(2)} sq mi` : `${m.water.km2.toFixed(2)} km²`;
-  return `${area} of water sunk ${m.set.waterMm} mm under its shore`;
+  const { km2, riverKm } = m.water;
+  if (km2 < 1e-9 && riverKm < 0.05) return 'No lake or river in OpenStreetMap here, or none big enough to show';
+  const area = state.units === 'imperial' ? `${(km2 / 2.589988).toFixed(2)} sq mi` : `${km2.toFixed(2)} km²`;
+  const length = state.units === 'imperial' ? `${(riverKm / 1.609344).toFixed(1)} mi` : `${riverKm.toFixed(1)} km`;
+  return [km2 >= 1e-9 && `${area} of water sunk ${m.set.waterMm} mm under its shore`, riverKm >= 0.05 && `${length} of river cut ${m.set.waterMm} mm deep`]
+    .filter(Boolean).join('; ');
 }
 
 /** A print's file name; a set of pieces adds its layout, and one piece of it its name. */
@@ -1694,7 +1701,7 @@ $('print-kml').addEventListener('click', () => {
     centre: m.centre,
     set: m.set,
     // a set's label differs piece to piece, so only a print in one piece keeps it
-    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.lowM, highM: m.highM, reliefMm: m.reliefMm, triangles, buildings: m.buildings, roads: m.roads, water: m.water && { km2: m.water.km2, readAt: m.water.readAt }, label: m.pieces.length === 1 ? m.pieces[0].label : null },
+    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.lowM, highM: m.highM, reliefMm: m.reliefMm, triangles, buildings: m.buildings, roads: m.roads, water: m.water && { km2: m.water.km2, riverKm: m.water.riverKm, readAt: m.water.readAt }, label: m.pieces.length === 1 ? m.pieces[0].label : null },
     stlFile: stlFileName(m),
   });
   download(printFileName(m, 'kml'), kml, 'application/vnd.google-earth.kml+xml');
