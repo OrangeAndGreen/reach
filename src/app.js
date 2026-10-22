@@ -2,6 +2,7 @@
 // The maths lives in core.js; this file fetches, wires and draws.
 import * as core from './core.js';
 import { lineChart, focusSeries } from './chart.js';
+import * as store from './store.js';
 
 const TERRARIUM = (z, x, y) => `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
 const OSRM = 'https://router.project-osrm.org/table/v1/driving/';
@@ -215,14 +216,40 @@ async function limited(fn) {
   try { return await fn(); } finally { inFlight--; waiting.shift()?.(); }
 }
 
+/** The most elevation tiles kept between visits (a few hundred MB at most); past it the oldest go first. */
+const TILES_KEPT = 3000;
+let tilesKept = null, keptTimer = 0;
+/** One tile's PNG, from those kept between visits or else fetched and kept. The tiles don't change, so a kept one never goes stale. */
+async function tileBlob(key) {
+  const saved = await store.get('tiles', key);
+  if (saved?.blob) return saved.blob;
+  const blob = await limited(async () => {
+    const res = await fetch(TERRARIUM(...key.split('/')));
+    if (!res.ok) throw new Error(`elevation tile ${key}: ${res.status}`);
+    return res.blob();
+  });
+  keepTile(key, blob);
+  return blob;
+}
+
+async function keepTile(key, blob) {
+  if (!(await store.putMany('tiles', [[key, { blob, savedAt: Date.now() }]]))) return;
+  tilesKept = (tilesKept ?? await store.count('tiles')) + 1;
+  if (tilesKept > TILES_KEPT) {
+    const drop = Math.round(TILES_KEPT / 10);
+    tilesKept -= drop;
+    await store.dropOldest('tiles', 'savedAt', drop);
+  }
+  clearTimeout(keptTimer);
+  keptTimer = setTimeout(showKept, 1000); // once a run of tiles settles, not for each
+}
+
 /** Elevations of one tile as a Float32Array of 256 x 256 metres. */
 function elevationTile(z, x, y) {
   const key = `${z}/${x}/${y}`;
   if (!tileCache.has(key)) {
-    const p = limited(async () => {
-      const res = await fetch(TERRARIUM(z, x, y));
-      if (!res.ok) throw new Error(`elevation tile ${key}: ${res.status}`);
-      const bmp = await createImageBitmap(await res.blob());
+    const p = (async () => {
+      const bmp = await createImageBitmap(await tileBlob(key));
       const canvas = new OffscreenCanvas(256, 256);
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       ctx.drawImage(bmp, 0, 0);
@@ -230,7 +257,7 @@ function elevationTile(z, x, y) {
       const out = new Float32Array(256 * 256);
       for (let k = 0; k < out.length; k++) out[k] = core.terrariumElevation(px[k * 4], px[k * 4 + 1], px[k * 4 + 2]);
       return core.despike(out);
-    });
+    })();
     p.catch(() => tileCache.delete(key));
     tileCache.set(key, p);
     if (tileCache.size > 600) tileCache.delete(tileCache.keys().next().value);
@@ -972,6 +999,52 @@ function overpass(query) {
   return osmCache.get(query);
 }
 
+const OSM_QUERY = { buildings: core.overpassBuildingsQuery, roads: core.overpassRoadsQuery };
+/**
+ * OpenStreetMap's buildings or roads in a lon/lat box, as { osm, readAt }:
+ * the cells kept from earlier visits, with only the ones missing or older
+ * than core.OSM_CELL_DAYS asked of Overpass (onFetch is called first), and
+ * kept in turn. readAt is the oldest cell's.
+ */
+async function osmArea(kind, bounds, onFetch) {
+  const z = core.OSM_CELL_ZOOM[kind];
+  const cells = core.cellsForBounds(bounds, z);
+  const keyOf = (c) => `${kind}/${z}/${c.x}/${c.y}`;
+  const saved = await store.getMany('osm', cells.map(keyOf));
+  const today = new Date().toISOString().slice(0, 10);
+  const missing = cells.filter((c, i) => !saved[i] || core.cellStale(saved[i].readAt, today));
+  if (missing.length) {
+    onFetch?.();
+    const { osm, readAt } = await overpass(OSM_QUERY[kind](core.cellBoxes(missing, z)));
+    const parts = core.elementsByCell(osm, missing, z);
+    const fresh = missing.map((c) => [keyOf(c), { elements: parts.get(`${c.x}/${c.y}`), readAt }]);
+    const got = new Map(fresh);
+    cells.forEach((c, i) => { saved[i] = got.get(keyOf(c)) || saved[i]; });
+    store.putMany('osm', fresh).then(showKept);
+  }
+  return {
+    osm: core.mergeElements(saved.map((s) => s.elements)),
+    readAt: saved.map((s) => s.readAt).sort()[0],
+  };
+}
+
+/** The line under the Print tool that says how much is kept between visits. */
+async function showKept() {
+  const [tiles, cells] = await Promise.all([store.count('tiles'), store.count('osm')]);
+  tilesKept = tiles;
+  $('kept-text').textContent = tiles || cells
+    ? `Kept for next time: ${tiles.toLocaleString()} elevation tile${tiles === 1 ? '' : 's'} and ${cells.toLocaleString()} OpenStreetMap area${cells === 1 ? '' : 's'}.`
+    : 'Nothing kept for next time yet.';
+  $('kept-clear').hidden = !(tiles || cells);
+}
+$('kept-clear').addEventListener('click', async () => {
+  await Promise.all([store.clear('tiles'), store.clear('osm')]);
+  osmCache.clear();
+  showKept();
+});
+showKept();
+try { navigator.storage?.persist?.(); } catch { /* best effort */ }
+
 let modelRun = 0;
 /** The edge skew past which a print says its square isn't square on the ground. */
 const SKEW_WARN = 0.05;
@@ -996,10 +1069,9 @@ async function buildModel() {
     const cut = outline && core.shapeCells(outline.ring, n, set.widthMm);
     let reply = null, missed = '';
     if (set.buildings) {
-      status('print', 'Fetching the buildings from OpenStreetMap…');
       const corner = plan.pieces.flatMap(({ frame: { bounds: b } }) => [{ lon: b.west, lat: b.south }, { lon: b.east, lat: b.north }]);
       try {
-        reply = await overpass(core.overpassBuildingsQuery(core.lonLatBounds(corner)));
+        reply = await osmArea('buildings', core.lonLatBounds(corner), () => status('print', 'Fetching the buildings from OpenStreetMap…'));
       } catch (err) {
         missed = ` Couldn't fetch the buildings (${err.message}), so this is the terrain alone.`;
       }
@@ -1007,10 +1079,9 @@ async function buildModel() {
     }
     let roadReply = null;
     if (set.roads) {
-      status('print', 'Fetching the roads from OpenStreetMap…');
       const corner = plan.pieces.flatMap(({ frame: { bounds: b } }) => [{ lon: b.west, lat: b.south }, { lon: b.east, lat: b.north }]);
       try {
-        roadReply = await overpass(core.overpassRoadsQuery(core.lonLatBounds(corner)));
+        roadReply = await osmArea('roads', core.lonLatBounds(corner), () => status('print', 'Fetching the roads from OpenStreetMap…'));
       } catch (err) {
         missed += ` Couldn't fetch the roads (${err.message}), so the print has none.`;
       }
