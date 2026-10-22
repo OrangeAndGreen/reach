@@ -764,6 +764,7 @@ function printSettings() {
     buildings: $('print-buildings').value === 'osm' && Number($('print-side').value) <= core.BUILDINGS_MAX_KM,
     buildingDefaultM: Number($('print-default').value),
     roads: $('print-roads').value === 'osm' && Number($('print-side').value) <= core.ROADS_MAX_KM,
+    waterMm: Number($('print-side').value) <= core.WATER_MAX_KM ? Number($('print-water').value) : 0,
     cols,
     rows,
   };
@@ -1024,9 +1025,9 @@ function overpass(query) {
   return osmCache.get(query);
 }
 
-const OSM_QUERY = { buildings: core.overpassBuildingsQuery, roads: core.overpassRoadsQuery };
+const OSM_QUERY = { buildings: core.overpassBuildingsQuery, roads: core.overpassRoadsQuery, water: core.overpassWaterQuery };
 /**
- * OpenStreetMap's buildings or roads in a lon/lat box, as { osm, readAt }:
+ * OpenStreetMap's buildings, roads or water in a lon/lat box, as { osm, readAt }:
  * the cells kept from earlier visits, with only the ones missing or older
  * than core.OSM_CELL_DAYS asked of Overpass (onFetch is called first), and
  * kept in turn. readAt is the oldest cell's.
@@ -1041,7 +1042,7 @@ async function osmArea(kind, bounds, onFetch) {
   if (missing.length) {
     onFetch?.();
     const { osm, readAt } = await overpass(OSM_QUERY[kind](core.cellBoxes(missing, z)));
-    const parts = core.elementsByCell(osm, missing, z);
+    const parts = (kind === 'water' ? core.waterByCell : core.elementsByCell)(osm, missing, z);
     const fresh = missing.map((c) => [keyOf(c), { elements: parts.get(`${c.x}/${c.y}`), readAt }]);
     const got = new Map(fresh);
     cells.forEach((c, i) => { saved[i] = got.get(keyOf(c)) || saved[i]; });
@@ -1112,6 +1113,16 @@ async function buildModel() {
       }
       if (run !== modelRun) return;
     }
+    let waterReply = null;
+    if (set.waterMm > 0) {
+      const corner = plan.pieces.flatMap(({ frame: { bounds: b } }) => [{ lon: b.west, lat: b.south }, { lon: b.east, lat: b.north }]);
+      try {
+        waterReply = await osmArea('water', core.lonLatBounds(corner), () => status('print', 'Fetching the lakes and rivers from OpenStreetMap…'));
+      } catch (err) {
+        missed += ` Couldn't fetch the lakes and rivers (${err.message}), so the print has none.`;
+      }
+      if (run !== modelRun) return;
+    }
     const read = [];
     for (const piece of plan.pieces) {
       const where = split ? { ...piece.centre, name: centre.name } : centre;
@@ -1144,6 +1155,14 @@ async function buildModel() {
       const scaled = core.printHeights(heights, { ...pieceSet, lowM }, cut?.used);
       const shore = set.shoreMm > 0 ? core.shorePoints(heights, n) : null;
       if (shore) scaled.mm = core.markShore(scaled.mm, shore, set.shoreMm, set.shoreRidge);
+      // Sunk before the buildings and roads are stood on it, so they reach down into it rather than float.
+      let water = null;
+      if (waterReply) {
+        const mask = core.waterPoints(waterReply.osm, heights, n, set.widthMm, piece.frame);
+        scaled.mm = core.carveWater(scaled.mm, mask, n, set.waterMm);
+        const cellKm = set.widthMm / (n - 1) / scaled.mmPerMetre / 1000;
+        water = { mask, km2: mask.reduce((s, v) => s + v, 0) * cellKm * cellKm, readAt: waterReply.readAt };
+      }
       const extra = placed ? core.buildingTriangles(placed.buildings, scaled.mm, n, { ...pieceSet, ...scaled }) : [];
       if (buildings) buildings.triangles = extra.length / 3;
       let roads = null;
@@ -1166,13 +1185,14 @@ async function buildModel() {
       } else {
         stl = core.terrainStl(scaled.mm, n, set.widthMm, extra, cutLabel, set.cornerMm, split ? piece.corners : null);
       }
-      return { name: piece.name, col: piece.col, row: piece.row, corners: piece.corners, stl, top, outline, scaled, set: pieceSet, buildings, roads, shore, label };
+      return { name: piece.name, col: piece.col, row: piece.row, corners: piece.corners, stl, top, outline, scaled, set: pieceSet, buildings, roads, water, shore, label };
     });
     state.model = {
       set, centre, plan, pieces, zoom: z, pixel, seaZoom, seaPixel: seaZoom == null ? null : core.pixelMetres(centre.lat, seaZoom),
       lowM, highM: Math.max(...pieces.map((p) => p.scaled.highM)), reliefMm: Math.max(...pieces.map((p) => p.scaled.reliefMm)),
       buildings: sumBuildings(pieces),
       roads: sumRoads(pieces),
+      water: sumWater(pieces),
     };
     showPieceChoice();
     showModel();
@@ -1225,6 +1245,13 @@ function sumRoads(pieces) {
   return { count: all.reduce((s, r) => s + r.count, 0), km, triangles: all.reduce((s, r) => s + r.triangles, 0), readAt: all[0].readAt };
 }
 
+/** The lakes and rivers of every piece together, or null without them. */
+function sumWater(pieces) {
+  const all = pieces.map((p) => p.water).filter(Boolean);
+  if (!all.length) return null;
+  return { km2: all.reduce((s, w) => s + w.km2, 0), readAt: all[0].readAt };
+}
+
 /** The preview's piece list: the whole set, then each piece. Hidden for a print in one piece. */
 function showPieceChoice() {
   const el = $('print-view'), { pieces } = state.model;
@@ -1242,6 +1269,7 @@ function sideChanged() {
   drawPrintSquare(true);
   showBuildingControls();
   showRoadControls();
+  showWaterControls();
   buildModel();
 }
 function addSide(km, label, dragged) {
@@ -1380,6 +1408,15 @@ function showRoadControls() {
 }
 $('print-roads').addEventListener('change', () => { showRoadControls(); buildModel(); });
 showRoadControls();
+function showWaterControls() {
+  const fits = Number($('print-side').value) <= core.WATER_MAX_KM;
+  $('print-water-hint').hidden = $('print-water').value === '0';
+  $('print-water-hint').textContent = fits
+    ? `Lakes, ponds, reservoirs and rivers mapped as areas in OpenStreetMap are sunk ${$('print-water').value} mm under the lowest water near each point, so a lake prints as one flat level and a river steps down its valley. Islands stay land. Water under ${core.WATER_MIN_MM2} mm² on the model, and rivers mapped only as lines, are left out.`
+    : `Lakes and rivers need a print of ${core.WATER_MAX_KM} km or less across, so this one has none.`;
+}
+$('print-water').addEventListener('change', () => { showWaterControls(); buildModel(); });
+showWaterControls();
 
 // Enlarged, the preview moves into the map's place (the whole screen on a phone),
 // and the settings stay beside it. Its ResizeObserver sizes the view to fit.
@@ -1470,7 +1507,7 @@ function previewGeometry(m) {
   const step = w + PREVIEW_GAP_MM;
   const parts = m.pieces.map((p) => {
     const q = lite >= n ? p : {
-      ...p, top: 2 * (lite - 1) ** 2, set: { ...p.set, cells: lite }, shore: null, label: null, buildings: null, roads: null,
+      ...p, top: 2 * (lite - 1) ** 2, set: { ...p.set, cells: lite }, shore: null, water: null, label: null, buildings: null, roads: null,
       stl: core.terrainStl(core.resampleGrid(p.scaled.mm, n, lite), lite, w, [], null, p.set.cornerMm, p.corners),
     };
     return { ...pieceGeometry(q), x: p.col * step, y: (rows - 1 - p.row) * step };
@@ -1502,21 +1539,23 @@ function pieceGeometry(m) {
     for (let v = 0; v < 3; v++) for (let k = 0; k < 3; k++) nrm[t * 9 + v * 3 + k] = view.getFloat32(o + k * 4, true);
   }
   // The sea floor in blue: top-surface vertices below sea level (the top comes first in the STL).
-  // The shoreline line dark, buildings, written next to last, in grey, and roads, written last, darker.
+  // The shoreline line dark, lakes and rivers blue like the sea, buildings, written next to last, in grey, and roads, written last, darker.
   const colours = new Float32Array(count * 9);
   const land = new THREE.Color(0xc9b79c), sea = new THREE.Color(0x6f9bc7), built = new THREE.Color(0x9a9da3), groove = new THREE.Color(0x4a3f33), road = new THREE.Color(0x55595f);
   const n = m.set.cells, step = m.set.widthMm / (n - 1);
   const topVertices = m.top * 3;
   const firstRoad = (count - (m.roads?.triangles || 0)) * 3;
   const firstBuilt = firstRoad - (m.buildings?.triangles || 0) * 3;
-  const onShore = (v) => m.shore[(n - 1 - Math.round(pos[v * 3 + 1] / step)) * n + Math.round(pos[v * 3] / step)];
+  const gridIndex = (v) => (n - 1 - Math.round(pos[v * 3 + 1] / step)) * n + Math.round(pos[v * 3] / step);
+  const onShore = (v) => m.shore[gridIndex(v)];
+  const onWater = (v) => m.water.mask[gridIndex(v)];
   // a label pocket: a triangle with no point above the pocket's depth, and one off the bed
   const depth = m.label?.depthMm;
   const inPocket = (t) => depth && [0, 1, 2].every((k) => pos[(t * 3 + k) * 3 + 2] <= depth + 1e-4) && [0, 1, 2].some((k) => pos[(t * 3 + k) * 3 + 2] > 1e-4);
   for (let v = 0; v < count * 3; v++) {
     const c = v >= firstRoad ? road : v >= firstBuilt ? built
       : (m.shore && v < topVertices && onShore(v)) || (v >= topVertices && inPocket(Math.floor(v / 3))) ? groove
-      : m.scaled.seaMm != null && v < topVertices && pos[v * 3 + 2] < m.scaled.seaMm - 1e-3 ? sea : land;
+      : (m.scaled.seaMm != null && v < topVertices && pos[v * 3 + 2] < m.scaled.seaMm - 1e-3) || (m.water && v < topVertices && onWater(v)) ? sea : land;
     colours[v * 3] = c.r; colours[v * 3 + 1] = c.g; colours[v * 3 + 2] = c.b;
   }
   return { pos, nrm, colours };
@@ -1553,6 +1592,7 @@ function renderPrintTable() {
     ...(first.label ? [['Label underneath', `${split ? `On ${first.name}: ` : ''}${labelText(first.label)}`]] : []),
     ...(m.buildings ? [['Buildings', buildingsText(m)]] : []),
     ...(m.roads ? [['Roads', roadsText(m.roads)]] : []),
+    ...(m.water ? [['Lakes and rivers', waterText(m)]] : []),
     ['STL', `${split ? `${pieces.length} files in one ZIP, ` : ''}${stlMb.toFixed(1)} MB, ${triangles.toLocaleString('en-US')} triangles`],
   ];
   $('print-table').innerHTML = `<tbody>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</tbody>`;
@@ -1618,6 +1658,12 @@ function roadsText(r) {
     .map(([cls, c]) => `${cls} ${length(r.km[cls])}, ${c.widthMm} mm wide, ${c.liftMm} mm up`).join('; ');
 }
 
+function waterText(m) {
+  if (m.water.km2 < 1e-9) return 'No lake or wide river in OpenStreetMap here, or none big enough to show';
+  const area = state.units === 'imperial' ? `${(m.water.km2 / 2.589988).toFixed(2)} sq mi` : `${m.water.km2.toFixed(2)} km²`;
+  return `${area} of water sunk ${m.set.waterMm} mm under its shore`;
+}
+
 /** A print's file name; a set of pieces adds its layout, and one piece of it its name. */
 function printFileName(m, ext, piece = '') {
   const slug = m.centre.name.split(',')[0].toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'print';
@@ -1648,7 +1694,7 @@ $('print-kml').addEventListener('click', () => {
     centre: m.centre,
     set: m.set,
     // a set's label differs piece to piece, so only a print in one piece keeps it
-    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.lowM, highM: m.highM, reliefMm: m.reliefMm, triangles, buildings: m.buildings, roads: m.roads, label: m.pieces.length === 1 ? m.pieces[0].label : null },
+    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.lowM, highM: m.highM, reliefMm: m.reliefMm, triangles, buildings: m.buildings, roads: m.roads, water: m.water && { km2: m.water.km2, readAt: m.water.readAt }, label: m.pieces.length === 1 ? m.pieces[0].label : null },
     stlFile: stlFileName(m),
   });
   download(printFileName(m, 'kml'), kml, 'application/vnd.google-earth.kml+xml');
@@ -1788,6 +1834,8 @@ $('print-file').addEventListener('change', async () => {
   showBuildingControls();
   $('print-roads').value = set.roads ? 'osm' : 'none';
   showRoadControls();
+  choose('print-water', set.waterMm, set.waterMm ? `Sunk ${set.waterMm} mm` : 'None');
+  showWaterControls();
   setPrintCentre(centre);
   status('print', `Opened ${file.name}. Building the same model.`);
 });

@@ -18,7 +18,7 @@ Three tools on one map:
   Central Park. On the map, drag the centre dot to move it or the outline to
   resize it: the shape grows about its centre, a rectangle's side moves alone,
   and sizes snap to 10 m, 100 m or 1 km as they grow. On prints of 2 km or less across it can raise the buildings
-  from OpenStreetMap too, and on prints of 50 km or less the main roads, raised. Choose the model width (the shape's width across), the detail, a height stretch and
+  from OpenStreetMap too, and on prints of 50 km or less the main roads, raised, and the lakes and wide rivers, sunk 0.6 or 1.2 mm. Choose the model width (the shape's width across), the detail, a height stretch and
   the base thickness, and whether the sea floor comes too (down to 50 m, 200 m,
   1,000 m or all the way, with its own depth stretch), and whether to mark the
   shoreline with a groove or a ridge (0.4 or 0.8 mm) to paint or just to see the coast by. It can also cut a label 0.6 mm up into the underside, mirrored so it reads when you turn the print over: the centre's coordinates, the ground covered and the height stretch (and the depth stretch, when the sea floor has its own), under an arrow pointing north, with up to three lines of your own text between the arrow and them, or your text alone. The corners are rounded, 5 mm by default (or 10 mm, or square), so a wide slab is slower to lift off the bed: a square's ground is squeezed into the curve, another shape's is cut off along it, and a star rounds only its points. A preview you can turn shows the model, beside its real
@@ -36,8 +36,9 @@ Three tools on one map:
 Reach keeps what it reads between visits, in the browser's IndexedDB, so a
 place you come back to costs no new download: the elevation tiles (up to 3,000,
 the oldest dropped first; they never change), and OpenStreetMap's buildings and
-roads by map cell (buildings in cells about 450 m across at Boston, roads 3.6
-km), read again after 90 days. A print that moves, grows or turns asks Overpass
+roads, lakes and rivers by map cell (buildings in cells about 450 m across at Boston, roads and water 3.6
+km), read again after 90 days. A lake is kept cut to each cell, so a print on
+Lake Michigan's shore keeps its own few km of shoreline, not the whole lake. A print that moves, grows or turns asks Overpass
 only for the cells it hasn't seen, and the KML's "read" date is the oldest
 cell's. A line under Print says how much is kept, with a button to clear it.
 
@@ -75,7 +76,7 @@ ES modules, which is why it needs the little server rather than file://.
 | Road times | OSRM public demo server, `table` service | fair use: a run is 4 to 11 calls of 300 points, 0.7 s apart, and is cached in the browser |
 | Place search | Open-Meteo geocoding | the same service Goldilocks uses |
 | Map click names | Nominatim reverse geocoding | one call per click |
-| Buildings, roads | OpenStreetMap through the Overpass API | one call each per print, kept for the session; © OpenStreetMap contributors, ODbL |
+| Buildings, roads, lakes and rivers | OpenStreetMap through the Overpass API | one call each per print, kept for the session; © OpenStreetMap contributors, ODbL |
 
 - **Height** reads every DEM pixel within the radius at the most detailed zoom
   that stays under 160 tiles. Then it re-reads each step of the
@@ -144,6 +145,16 @@ ES modules, which is why it needs the little server rather than file://.
   them. Classes are as OSM tags them: Chicago's arterials (Cermak, Roosevelt,
   Michigan Avenue) are secondary, so a 10 km Loop print shows only its
   expressways and Lake Shore Drive.
+- **Lakes and rivers.** Water areas (`natural=water` and `waterway=riverbank`,
+  ways and multipolygons, but not wastewater or anything covered) fill the grid
+  points inside them, even-odd so islands stay land. Water at or under sea level is left to the sea, and
+  patches under 4 mm² on the model are dropped. Each point sinks 0.6 or 1.2 mm under
+  the lowest water within two grid steps of it. A lake reads flat in the
+  elevation data, so it prints as one level under its shore, and the window reaches past the
+  blur at the shore that would lift the edge. A river steps down its valley.
+  The water is carved before buildings and roads are stood on the terrain, so a
+  bridge reaches down into the channel rather than float. Rivers mapped only as
+  lines aren't fetched yet: most are narrower than a grid step.
 - **Buildings already in the elevation data.** Mostly they aren't: at the
   print zooms the tiles are bare earth under the buildings OSM maps in
   Manhattan, Sunny Isles Beach, Midtown Miami and Dubai Marina. The tall
