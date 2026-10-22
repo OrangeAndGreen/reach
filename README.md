@@ -33,6 +33,14 @@ Three tools on one map:
   layer on show (Terrain or Streets) cropped to the print (turned to match, and clear outside its shape), as a PNG of up to
   2,048 px with the map's credit in the corner.
 
+Reach keeps what it reads between visits, in the browser's IndexedDB, so a
+place you come back to costs no new download: the elevation tiles (up to 3,000,
+the oldest dropped first; they never change), and OpenStreetMap's buildings and
+roads by map cell (buildings in cells about 450 m across at Boston, roads 3.6
+km), read again after 90 days. A print that moves, grows or turns asks Overpass
+only for the cells it hasn't seen, and the KML's "read" date is the oldest
+cell's. A line under Print says how much is kept, with a button to clear it.
+
 All three started as ideas parked in ViggiPy's `TODO.txt`: the
 distance-to-height graph (Miami, Boston, Cape Town), the drive-distance graph
 maker with time-contour placemarks, and 3D-printed landscapes from DEM data.

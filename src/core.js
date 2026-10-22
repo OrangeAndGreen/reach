@@ -1894,10 +1894,15 @@ export const LIFTED_M = 4;
 /** Footprints smaller than this on the model (mm²) are left out, as too small to print. */
 export const MIN_FOOTPRINT_MM2 = 0.4;
 
-/** The Overpass query for every building in a lon/lat box, with its outline. */
+/** The Overpass query for every building in a lon/lat box, or in any of a list of them, with its outline. */
 export function overpassBuildingsQuery(b) {
-  const box = [b.south, b.west, b.north, b.east].map((v) => v.toFixed(6)).join(',');
-  return `[out:json][timeout:90];(way["building"](${box});relation["building"]["type"="multipolygon"](${box}););out geom;`;
+  const parts = overpassBoxes(b).map((box) => `way["building"](${box});relation["building"]["type"="multipolygon"](${box});`);
+  return `[out:json][timeout:90];(${parts.join('')});out geom;`;
+}
+
+/** A lon/lat box, or a list of them, as Overpass bbox strings (south,west,north,east). */
+function overpassBoxes(b) {
+  return [b].flat().map((x) => [x.south, x.west, x.north, x.east].map((v) => v.toFixed(6)).join(','));
 }
 
 /** Metres from an OSM length ("12", "12.5 m", "40 ft", "40'", "12'6\""), or null. */
@@ -2294,10 +2299,10 @@ export const ROADS_MAX_KM = 50;
 /** A road's top follows the ground averaged over this far either way along it (mm on the model), so it reads as graded. */
 export const ROAD_SMOOTH_MM = 1.5;
 
-/** The Overpass query for every motorway, trunk and primary road in a lon/lat box, with its line. */
+/** The Overpass query for every motorway, trunk and primary road in a lon/lat box, or in any of a list of them, with its line. */
 export function overpassRoadsQuery(b) {
-  const box = [b.south, b.west, b.north, b.east].map((v) => v.toFixed(6)).join(',');
-  return `[out:json][timeout:90];way["highway"~"^(${Object.keys(ROAD_CLASSES).join('|')})$"](${box});out geom;`;
+  const parts = overpassBoxes(b).map((box) => `way["highway"~"^(${Object.keys(ROAD_CLASSES).join('|')})$"](${box});`);
+  return `[out:json][timeout:90];(${parts.join('')});out geom;`;
 }
 
 /**
@@ -2515,4 +2520,107 @@ export function zipFiles(files, made = new Date()) {
   let at = 0;
   for (const p of [...parts, ...central, end]) { out.set(p, at); at += p.length; }
   return out;
+}
+
+// ---------- saved OpenStreetMap areas ----------
+
+/**
+ * OpenStreetMap data is fetched and kept by web-mercator cell rather than by
+ * print, so a print that moves, grows or turns over ground already read needs
+ * no new query. Buildings come in zoom 16 cells (610 m across at the equator,
+ * 450 m at Boston), so the box asked for is at most a cell wider each way than
+ * a 2 km print; roads in zoom 13 cells (4.9 km, 3.6 km).
+ */
+export const OSM_CELL_ZOOM = { buildings: 16, roads: 13 };
+/** Saved cells older than this many days are read again. */
+export const OSM_CELL_DAYS = 90;
+
+/** Every cell at zoom z that a lon/lat box touches, as { x, y }, row by row from the north. */
+export function cellsForBounds(b, z) {
+  const nw = lonLatToTile(b.west, b.north, z), se = lonLatToTile(b.east, b.south, z);
+  const last = 2 ** z - 1;
+  const clamp = (v) => Math.max(0, Math.min(last, Math.floor(v)));
+  const out = [];
+  for (let y = clamp(nw.y); y <= clamp(se.y); y++) for (let x = clamp(nw.x); x <= clamp(se.x); x++) out.push({ x, y });
+  return out;
+}
+
+/** The lon/lat box of one cell at zoom z. */
+export function cellBounds({ x, y }, z) {
+  const nw = tileToLonLat(x, y, z), se = tileToLonLat(x + 1, y + 1, z);
+  return { west: nw.lon, east: se.lon, south: se.lat, north: nw.lat };
+}
+
+/**
+ * Cells covered by as few lon/lat boxes as a simple sweep finds: runs along
+ * each row, then runs of the same columns in rows one under another joined.
+ * Asking Overpass for these, not the one box round them all, leaves out the
+ * cells already saved between them.
+ */
+export function cellBoxes(cells, z) {
+  const rows = new Map();
+  for (const c of cells) (rows.get(c.y) || rows.set(c.y, []).get(c.y)).push(c.x);
+  const open = new Map(); // "x0/x1" -> { x0, x1, y0, y1 } still growing down
+  const done = [];
+  for (const y of [...rows.keys()].sort((a, b) => a - b)) {
+    const xs = [...new Set(rows.get(y))].sort((a, b) => a - b);
+    const runs = [];
+    for (const x of xs) {
+      const run = runs[runs.length - 1];
+      if (run && x === run.x1 + 1) run.x1 = x; else runs.push({ x0: x, x1: x });
+    }
+    const next = new Map();
+    for (const { x0, x1 } of runs) {
+      const key = `${x0}/${x1}`, prev = open.get(key);
+      if (prev && prev.y1 === y - 1) { prev.y1 = y; next.set(key, prev); open.delete(key); } else next.set(key, { x0, x1, y0: y, y1: y });
+    }
+    done.push(...open.values());
+    open.clear();
+    for (const [k, v] of next) open.set(k, v);
+  }
+  done.push(...open.values());
+  return done.map(({ x0, x1, y0, y1 }) => {
+    const nw = cellBounds({ x: x0, y: y0 }, z), se = cellBounds({ x: x1, y: y1 }, z);
+    return { west: nw.west, north: nw.north, east: se.east, south: se.south };
+  });
+}
+
+/** The lon/lat box round an OSM element's geometry (a way's points, or a relation's members'), or null. */
+export function elementBounds(el) {
+  const points = el.geometry || (el.members || []).flatMap((m) => m.geometry || []);
+  if (points.length) return lonLatBounds(points);
+  const b = el.bounds;
+  return b ? { west: b.minlon, east: b.maxlon, south: b.minlat, north: b.maxlat } : null;
+}
+
+/**
+ * An Overpass reply shared out among the cells it was asked for, as a Map
+ * from "x/y" to that cell's elements. An element goes to every cell its box
+ * touches, so one that crosses a cell edge is kept in both.
+ */
+export function elementsByCell(osm, cells, z) {
+  const out = new Map(cells.map((c) => [`${c.x}/${c.y}`, []]));
+  for (const el of osm.elements || []) {
+    const b = elementBounds(el);
+    if (!b) continue;
+    for (const { x, y } of cellsForBounds(b, z)) out.get(`${x}/${y}`)?.push(el);
+  }
+  return out;
+}
+
+/** Saved cells' elements as one Overpass-like reply, each element once. */
+export function mergeElements(lists) {
+  const seen = new Set(), elements = [];
+  for (const list of lists) {
+    for (const el of list) {
+      const id = `${el.type}/${el.id}`;
+      if (!seen.has(id)) { seen.add(id); elements.push(el); }
+    }
+  }
+  return { elements };
+}
+
+/** Whether a cell read on readAt (YYYY-MM-DD) is due to be read again on today. */
+export function cellStale(readAt, today, days = OSM_CELL_DAYS) {
+  return (Date.parse(today) - Date.parse(readAt)) / 86400000 > days;
 }
