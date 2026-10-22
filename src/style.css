@@ -72,6 +72,16 @@ button, input, select { font: inherit; color: inherit; }
   border-bottom: 3px solid transparent;
 }
 .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+/* the Shape / Features split inside the print settings: a smaller cousin of the header tabs */
+.subtabs { display: flex; gap: 4px; border-bottom: 1px solid var(--rule); margin-top: 4px; }
+.subtabs button {
+  font: 600 15px/1 var(--f-display); letter-spacing: 0.06em; text-transform: uppercase;
+  background: none; border: 0; padding: 8px 12px; margin-bottom: -1px; cursor: pointer; color: var(--ink-3);
+  border-bottom: 3px solid transparent;
+}
+.subtabs button:hover { color: var(--ink-2); }
+.subtabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.subpane { display: flex; flex-direction: column; gap: 14px; margin-top: -2px; }
 .units, .seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
 .units { margin-left: auto; }
 .units button, .seg button {

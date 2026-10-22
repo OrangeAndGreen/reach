@@ -155,182 +155,198 @@
         <p class="hint">Or click the map while this tab is open. Drag the dot to move it, or the outline to resize it. <span id="print-name" class="origin"></span></p>
       </div>
 
-      <div class="row">
-        <div class="field">
-          <label for="print-side">Size across</label>
-          <select id="print-side">
-            <option value="0.1">100 m</option>
-            <option value="0.25">250 m</option>
-            <option value="0.5">500 m</option>
-            <option value="1">1 km</option>
-            <option value="2">2 km</option>
-            <option value="5">5 km</option>
-            <option value="10">10 km</option>
-            <option value="20" selected>20 km</option>
-            <option value="40">40 km</option>
-            <option value="80">80 km</option>
-            <option value="160">160 km</option>
-            <option value="200">200 km</option>
-            <option value="500">500 km</option>
-            <option value="custom">Your own…</option>
-          </select>
+      <div class="subtabs" role="tablist" aria-label="Settings">
+        <button id="print-tab-shape" role="tab" aria-selected="true" aria-controls="print-shape-panel" data-subtab="shape">Shape</button>
+        <button id="print-tab-features" role="tab" aria-selected="false" aria-controls="print-features-panel" data-subtab="features" tabindex="-1">Features</button>
+      </div>
+      <div id="print-shape-panel" class="subpane" role="tabpanel" aria-labelledby="print-tab-shape">
+        <div class="row">
+          <div class="field">
+            <label for="print-side">Size across</label>
+            <select id="print-side">
+              <option value="0.1">100 m</option>
+              <option value="0.25">250 m</option>
+              <option value="0.5">500 m</option>
+              <option value="1">1 km</option>
+              <option value="2">2 km</option>
+              <option value="5">5 km</option>
+              <option value="10">10 km</option>
+              <option value="20" selected>20 km</option>
+              <option value="40">40 km</option>
+              <option value="80">80 km</option>
+              <option value="160">160 km</option>
+              <option value="200">200 km</option>
+              <option value="500">500 km</option>
+              <option value="custom">Your own…</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="print-width">Model width</label>
+            <select id="print-width">
+              <option value="80">80 mm</option>
+              <option value="120" selected>120 mm</option>
+              <option value="180">180 mm</option>
+              <option value="250">250 mm</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="print-pitch">Detail</label>
+            <select id="print-pitch">
+              <option value="1" data-name="Draft">Draft, 1 mm</option>
+              <option value="0.6" data-name="Standard" selected>Standard, 0.6 mm</option>
+              <option value="0.4" data-name="Fine">Fine, 0.4 mm</option>
+            </select>
+          </div>
         </div>
-        <div class="field">
-          <label for="print-width">Model width</label>
-          <select id="print-width">
-            <option value="80">80 mm</option>
-            <option value="120" selected>120 mm</option>
-            <option value="180">180 mm</option>
-            <option value="250">250 mm</option>
-          </select>
+        <div id="print-side-field" class="field" hidden>
+          <label for="print-side-own">Your own size across</label>
+          <input id="print-side-own" type="text" inputmode="decimal" autocomplete="off" spellcheck="false">
         </div>
-        <div class="field">
-          <label for="print-pitch">Detail</label>
-          <select id="print-pitch">
-            <option value="1" data-name="Draft">Draft, 1 mm</option>
-            <option value="0.6" data-name="Standard" selected>Standard, 0.6 mm</option>
-            <option value="0.4" data-name="Fine">Fine, 0.4 mm</option>
-          </select>
+        <p id="print-side-hint" class="hint" hidden></p>
+        <div class="row">
+          <div class="field">
+            <label for="print-shape">Shape</label>
+            <select id="print-shape">
+              <option value="square" selected>Square</option>
+              <option value="rectangle">Rectangle</option>
+              <option value="circle">Circle</option>
+              <option value="hexagon">Hexagon</option>
+              <option value="triangle">Triangle</option>
+              <option value="star">Star</option>
+            </select>
+          </div>
+          <div id="print-aspect-field" class="field" hidden>
+            <label for="print-aspect">Sides</label>
+            <select id="print-aspect">
+              <option value="1.5">3 : 2</option>
+              <option value="2" selected>2 : 1</option>
+              <option value="3">3 : 1</option>
+              <option value="4">4 : 1</option>
+              <option value="5">5 : 1</option>
+            </select>
+          </div>
+          <div id="print-pieces-field" class="field">
+            <label for="print-pieces">Pieces</label>
+            <select id="print-pieces">
+              <option value="1x1" selected>One piece</option>
+              <option value="2x1">2 × 1</option>
+              <option value="1x2">1 × 2</option>
+              <option value="2x2">2 × 2</option>
+              <option value="3x1">3 × 1</option>
+              <option value="3x2">3 × 2</option>
+              <option value="2x3">2 × 3</option>
+              <option value="3x3">3 × 3</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="print-turn">Turn <span id="print-turn-value"></span></label>
+            <input id="print-turn" type="range" min="-90" max="90" step="1" value="0">
+          </div>
         </div>
+        <p id="print-pieces-hint" class="hint" hidden></p>
+        <div class="row">
+          <div class="field">
+            <label for="print-exag">Height stretch <span id="print-exag-value"></span></label>
+            <input id="print-exag" type="range" min="0" max="58" step="1" value="2">
+          </div>
+          <div class="field">
+            <label for="print-base">Base</label>
+            <select id="print-base">
+              <option value="2">2 mm</option>
+              <option value="3" selected>3 mm</option>
+              <option value="5">5 mm</option>
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="print-sea">Sea floor</label>
+            <select id="print-sea">
+              <option value="0" selected>Cut at sea level</option>
+              <option value="50">Down to 50 m</option>
+              <option value="200">Down to 200 m</option>
+              <option value="1000">Down to 1,000 m</option>
+              <option value="11000">Full depth</option>
+            </select>
+          </div>
+          <div id="print-depth-field" class="field" hidden>
+            <label for="print-depth">Depth stretch <span id="print-depth-value"></span></label>
+            <input id="print-depth" type="range" min="1" max="20" step="0.5" value="3">
+          </div>
+          <div id="print-corner-field" class="field">
+            <label for="print-corner">Corners</label>
+            <select id="print-corner">
+              <option value="0">Square</option>
+              <option value="5" selected>Rounded 5 mm</option>
+              <option value="10">Rounded 10 mm</option>
+            </select>
+          </div>
+        </div>
+        <p id="print-sea-hint" class="hint" hidden>The sea floor comes from coarser tiles than the land (75 to 150 m per pixel, by latitude), so it prints softer. Lakes print as their flat surface.</p>
+        <p id="print-corner-hint" class="hint">Rounded corners are slower to lift off the bed as the print cools. The ground within a corner is squeezed to fit, by up to 0.4 of the radius.</p>
+      </div>
+      <div id="print-features-panel" class="subpane" role="tabpanel" aria-labelledby="print-tab-features" hidden>
+        <div class="row">
+          <div class="field">
+            <label for="print-buildings">Buildings</label>
+            <select id="print-buildings">
+              <option value="none" selected>None</option>
+              <option value="osm">From OpenStreetMap</option>
+            </select>
+          </div>
+          <div id="print-default-field" class="field" hidden>
+            <label for="print-default">Height where OSM has none</label>
+            <select id="print-default">
+              <option value="4">1 floor (4 m)</option>
+              <option value="7" selected>2 floors (7 m)</option>
+              <option value="10">3 floors (10 m)</option>
+            </select>
+          </div>
+        </div>
+        <p id="print-buildings-hint" class="hint" hidden></p>
+        <div class="row">
+          <div class="field">
+            <label for="print-roads">Roads</label>
+            <select id="print-roads">
+              <option value="none" selected>None</option>
+              <option value="osm">Main roads, raised</option>
+            </select>
+          </div>
+        </div>
+        <p id="print-roads-hint" class="hint" hidden></p>
+        <div class="row">
+          <div class="field">
+            <label for="print-shore">Shoreline</label>
+            <select id="print-shore">
+              <option value="0" selected>No line</option>
+              <option value="groove-0.4">Groove 0.4 mm deep</option>
+              <option value="groove-0.8">Groove 0.8 mm deep</option>
+              <option value="ridge-0.4">Ridge 0.4 mm high</option>
+              <option value="ridge-0.8">Ridge 0.8 mm high</option>
+            </select>
+          </div>
+        </div>
+        <p id="print-shore-hint" class="hint" hidden>The line runs along the land's edge, one grid point wide, so a finer detail draws a finer line. It follows the coast, not lakeshores, which the tiles hold as flat land.</p>
+        <div class="row">
+          <div class="field">
+            <label for="print-label">Label underneath</label>
+            <select id="print-label">
+              <option value="none" selected>None</option>
+              <option value="on">Centre, area, stretch</option>
+              <option value="text">Your own text</option>
+              <option value="both">Both</option>
+            </select>
+          </div>
+        </div>
+        <div id="print-text-field" class="field" hidden>
+          <label for="print-text">Your text</label>
+          <textarea id="print-text" rows="3" placeholder="Up to 3 lines of 30 letters" spellcheck="false"></textarea>
+        </div>
+        <p id="print-label-hint" class="hint" hidden></p>
       </div>
       <div class="row">
-        <div class="field">
-          <label for="print-shape">Shape</label>
-          <select id="print-shape">
-            <option value="square" selected>Square</option>
-            <option value="rectangle">Rectangle</option>
-            <option value="circle">Circle</option>
-            <option value="hexagon">Hexagon</option>
-            <option value="triangle">Triangle</option>
-            <option value="star">Star</option>
-          </select>
-        </div>
-        <div id="print-aspect-field" class="field" hidden>
-          <label for="print-aspect">Sides</label>
-          <select id="print-aspect">
-            <option value="1.5">3 : 2</option>
-            <option value="2" selected>2 : 1</option>
-            <option value="3">3 : 1</option>
-            <option value="4">4 : 1</option>
-            <option value="5">5 : 1</option>
-          </select>
-        </div>
-        <div id="print-pieces-field" class="field">
-          <label for="print-pieces">Pieces</label>
-          <select id="print-pieces">
-            <option value="1x1" selected>One piece</option>
-            <option value="2x1">2 × 1</option>
-            <option value="1x2">1 × 2</option>
-            <option value="2x2">2 × 2</option>
-            <option value="3x1">3 × 1</option>
-            <option value="3x2">3 × 2</option>
-            <option value="2x3">2 × 3</option>
-            <option value="3x3">3 × 3</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="print-turn">Turn <span id="print-turn-value"></span></label>
-          <input id="print-turn" type="range" min="-90" max="90" step="1" value="0">
-        </div>
-      </div>
-      <div class="row">
-        <div class="field">
-          <label for="print-exag">Height stretch <span id="print-exag-value"></span></label>
-          <input id="print-exag" type="range" min="0" max="58" step="1" value="2">
-        </div>
-        <div class="field">
-          <label for="print-base">Base</label>
-          <select id="print-base">
-            <option value="2">2 mm</option>
-            <option value="3" selected>3 mm</option>
-            <option value="5">5 mm</option>
-          </select>
-        </div>
-      </div>
-      <div class="row">
-        <div class="field">
-          <label for="print-sea">Sea floor</label>
-          <select id="print-sea">
-            <option value="0" selected>Cut at sea level</option>
-            <option value="50">Down to 50 m</option>
-            <option value="200">Down to 200 m</option>
-            <option value="1000">Down to 1,000 m</option>
-            <option value="11000">Full depth</option>
-          </select>
-        </div>
-        <div id="print-depth-field" class="field" hidden>
-          <label for="print-depth">Depth stretch <span id="print-depth-value"></span></label>
-          <input id="print-depth" type="range" min="1" max="20" step="0.5" value="3">
-        </div>
-        <div class="field">
-          <label for="print-shore">Shoreline</label>
-          <select id="print-shore">
-            <option value="0" selected>No line</option>
-            <option value="groove-0.4">Groove 0.4 mm deep</option>
-            <option value="groove-0.8">Groove 0.8 mm deep</option>
-            <option value="ridge-0.4">Ridge 0.4 mm high</option>
-            <option value="ridge-0.8">Ridge 0.8 mm high</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="print-label">Label underneath</label>
-          <select id="print-label">
-            <option value="none" selected>None</option>
-            <option value="on">Centre, area, stretch</option>
-            <option value="text">Your own text</option>
-            <option value="both">Both</option>
-          </select>
-        </div>
-        <div id="print-corner-field" class="field">
-          <label for="print-corner">Corners</label>
-          <select id="print-corner">
-            <option value="0">Square</option>
-            <option value="5" selected>Rounded 5 mm</option>
-            <option value="10">Rounded 10 mm</option>
-          </select>
-        </div>
-      </div>
-      <div class="row">
-        <div class="field">
-          <label for="print-buildings">Buildings</label>
-          <select id="print-buildings">
-            <option value="none" selected>None</option>
-            <option value="osm">From OpenStreetMap</option>
-          </select>
-        </div>
-        <div id="print-default-field" class="field" hidden>
-          <label for="print-default">Height where OSM has none</label>
-          <select id="print-default">
-            <option value="4">1 floor (4 m)</option>
-            <option value="7" selected>2 floors (7 m)</option>
-            <option value="10">3 floors (10 m)</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="print-roads">Roads</label>
-          <select id="print-roads">
-            <option value="none" selected>None</option>
-            <option value="osm">Main roads, raised</option>
-          </select>
-        </div>
         <button id="print-run" class="primary">Build model</button>
       </div>
-      <p id="print-sea-hint" class="hint" hidden>The sea floor comes from coarser tiles than the land (75 to 150 m per pixel, by latitude), so it prints softer. Lakes print as their flat surface.</p>
-      <p id="print-shore-hint" class="hint" hidden>The line runs along the land's edge, one grid point wide, so a finer detail draws a finer line. It follows the coast, not lakeshores, which the tiles hold as flat land.</p>
-      <div id="print-side-field" class="field" hidden>
-        <label for="print-side-own">Your own size across</label>
-        <input id="print-side-own" type="text" inputmode="decimal" autocomplete="off" spellcheck="false">
-      </div>
-      <p id="print-side-hint" class="hint" hidden></p>
-      <div id="print-text-field" class="field" hidden>
-        <label for="print-text">Your text</label>
-        <textarea id="print-text" rows="3" placeholder="Up to 3 lines of 30 letters" spellcheck="false"></textarea>
-      </div>
-      <p id="print-label-hint" class="hint" hidden></p>
-      <p id="print-pieces-hint" class="hint" hidden></p>
-      <p id="print-corner-hint" class="hint">Rounded corners are slower to lift off the bed as the print cools. The ground within a corner is squeezed to fit, by up to 0.4 of the radius.</p>
-      <p id="print-buildings-hint" class="hint" hidden></p>
-      <p id="print-roads-hint" class="hint" hidden></p>
       <div id="print-status" class="status" aria-live="polite"></div>
 
       <figure class="chart-wrap">
