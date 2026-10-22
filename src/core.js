@@ -2289,8 +2289,8 @@ export const ROAD_CLASSES = {
   trunk: { widthMm: 1.2, liftMm: 0.8, widthM: 20 },
   primary: { widthMm: 0.8, liftMm: 0.4, widthM: 14 },
 };
-/** Roads come from OpenStreetMap only on prints this size across or smaller: past it the query is too big. */
-export const ROADS_MAX_KM = 25;
+/** Roads come from OpenStreetMap only on prints this size across or smaller. Not measured: past 25 km the query may be slow or turned away by Overpass. */
+export const ROADS_MAX_KM = 50;
 /** A road's top follows the ground averaged over this far either way along it (mm on the model), so it reads as graded. */
 export const ROAD_SMOOTH_MM = 1.5;
 
