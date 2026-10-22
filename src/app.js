@@ -33,6 +33,7 @@ function saveSettings() {
       places: state.places.map(({ name, lat, lon, slot }) => ({ name, lat, lon, slot })),
       origin: state.origin,
       print: state.print,
+      printTab: state.printTab,
       limits: $('limits').value,
       detail: $('detail').value,
     }));
@@ -53,6 +54,7 @@ const state = {
   drive: null,
   driveMeasure: 'far',
   print: saved.print || { name: 'Mount Washington, New Hampshire', lat: 44.2706, lon: -71.3033 },
+  printTab: saved.printTab || 'shape',
   model: null,
   busy: false,
 };
@@ -132,6 +134,29 @@ function setTab(tab) {
   saveSettings();
 }
 document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
+
+// the print settings split in two: the piece's shape, and what is drawn on it
+const subtabs = [...document.querySelectorAll('.subtabs button')];
+function setPrintTab(tab) {
+  state.printTab = tab;
+  for (const b of subtabs) {
+    const on = b.dataset.subtab === tab;
+    b.setAttribute('aria-selected', String(on));
+    b.tabIndex = on ? 0 : -1;
+    $(b.getAttribute('aria-controls')).hidden = !on;
+  }
+  saveSettings();
+}
+subtabs.forEach((b, i) => {
+  b.addEventListener('click', () => setPrintTab(b.dataset.subtab));
+  b.addEventListener('keydown', (e) => {
+    const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+    if (!step) return;
+    const next = subtabs[(i + step + subtabs.length) % subtabs.length];
+    setPrintTab(next.dataset.subtab);
+    next.focus();
+  });
+});
 
 function setUnits(units) {
   state.units = units;
@@ -1811,6 +1836,7 @@ searchBox('place-search', 'place-results', addPlace);
 searchBox('origin-search', 'origin-results', setOrigin);
 searchBox('print-search', 'print-results', setPrintCentre);
 setUnits(state.units);
+setPrintTab(state.printTab);
 setTab(state.tab);
 measure();
 
