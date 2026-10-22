@@ -98,11 +98,65 @@ test('carveWater sinks a lake to one level under its lowest water, and leaves th
 
 test('a print KML keeps the water setting and the area sunk', () => {
   const centre = { name: 'Lake Placid', lat: 44.28, lon: -73.98 };
-  const set = { sideKm: 20, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 2, baseMm: 3, seaFloorM: 0, depthStretch: 2, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roads: false, waterMm: 0.6, cols: 1, rows: 1 };
-  const model = { zoom: 12, pixelM: 28, lowM: 500, highM: 1600, reliefMm: 11, triangles: 90000, water: { km2: 12.345, readAt: '2026-10-22' } };
+  const set = { sideKm: 20, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 2, baseMm: 3, seaFloorM: 0, depthStretch: 2, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: { lakes: -0.6, wide: 1.2, narrow: -2 }, cols: 1, rows: 1 };
+  const model = { zoom: 12, pixelM: 28, lowM: 500, highM: 1600, reliefMm: 11, triangles: 90000, water: { lakesKm2: 12.345, wideKm2: 1, riverKm: 3, readAt: '2026-10-22' } };
   const kml = core.printKml({ centre, set, model });
-  assert.match(kml, /<Data name="waterKm2">.*<value>12.35<\/value>/);
+  assert.match(kml, /<Data name="lakesKm2">.*<value>12.35<\/value>/);
+  assert.match(kml, /<Data name="wideRiversMm">.*<value>1.2<\/value>/);
   assert.deepEqual(core.parsePrintKml(kml).set, set);
+});
+
+test('a KML from before each kind of water had its own level sinks them all its one depth', () => {
+  const centre = { name: 'Lake Placid', lat: 44.28, lon: -73.98 };
+  const set = { sideKm: 20, widthMm: 120, cells: 201, exaggeration: 2, baseMm: 3, roadMm: core.NO_ROADS, waterMm: core.NO_WATER };
+  const old = (kml, data) => kml.replace(/ *<Data name="(lakes|wideRivers|narrowRivers)Mm">[\s\S]*?<\/Data>\n/g, '').replace('</ExtendedData>', `${data}</ExtendedData>`);
+  const kml = old(core.printKml({ centre, set }), '<Data name="waterMm"><value>1.2</value></Data>');
+  assert.deepEqual(core.parsePrintKml(kml).set.waterMm, { lakes: -1.2, wide: -1.2, narrow: -1.2 });
+  assert.deepEqual(core.parsePrintKml(old(core.printKml({ centre, set }), '')).set.waterMm, core.NO_WATER);
+});
+
+test('waterKinds splits a lake from a river area, and the lake keeps where they overlap', () => {
+  const n = 21, widthMm = 20;
+  const heights = new Array(n * n).fill(100);
+  const lake = { type: 'water', rings: [[[2, 2], [10, 2], [10, 18], [2, 18]]], wide: false };
+  const river = { type: 'water', rings: [[[8, 8], [18, 8], [18, 12], [8, 12]]], wide: true };
+  const { lakes, wide } = core.waterKinds({ elements: [lake, river] }, heights, n, widthMm, flat);
+  const at = (x, y) => (n - 1 - y) * n + x;
+  assert.equal(lakes[at(5, 5)], 1);
+  assert.equal(wide[at(5, 5)], 0);
+  assert.equal(lakes[at(9, 10)], 1); // in both
+  assert.equal(wide[at(9, 10)], 0);
+  assert.equal(wide[at(15, 10)], 1);
+  assert.equal(lakes[at(15, 10)], 0);
+});
+
+test('wideRiver tells a river area from a lake', () => {
+  assert.equal(core.wideRiver({ waterway: 'riverbank' }), true);
+  assert.equal(core.wideRiver({ natural: 'water', water: 'river' }), true);
+  assert.equal(core.wideRiver({ natural: 'water', water: 'canal' }), true);
+  assert.equal(core.wideRiver({ natural: 'water', water: 'reservoir' }), false);
+  assert.equal(core.wideRiver({ natural: 'water' }), false);
+});
+
+test('raised water stands its height over the lowest water near it, lifting only what is under it', () => {
+  // a lake reading 1 mm flat, its edge blurred up to 1.5 mm
+  const mm = [1.5, 1, 1, 1], water = new Uint8Array([1, 1, 1, 1]);
+  const out = core.carveWater(mm, water, 2, -0.4);
+  near(out[1], 1.4, 1e-9);
+  near(out[0], 1.5, 1e-9); // already over the level, left as it is
+});
+
+test('a raised river is a ridge over the lowest ground upstream, never cutting', () => {
+  const n = 21, widthMm = 20;
+  const mm = new Array(n * n).fill(5);
+  for (let i = 0; i < n; i++) mm[10 * n + i] = 5 - i * 0.1; // the river's row falls 2 mm west to east
+  mm[10 * n + 12] = 6; // a bump in the data
+  const river = [[0, 10, 1], [20, 10, 1]];
+  const { mm: out, mask } = core.carveRivers(mm, [river], n, { widthMm, mmPerMetre: 1, depthMm: -0.8 });
+  near(out[10 * n + 5], 4.5 + 0.8, 0.06); // samples half a step downstream reach it too
+  near(out[10 * n + 12], 6, 1e-9); // the bump stays: a raised river only lifts
+  near(out[10 * n + 13], 3.7 + 0.8, 0.06); // and drops back to the lowest level upstream past it
+  assert.equal(mask[10 * n + 5], 1);
 });
 
 // Narrow rivers, cut as channels.
