@@ -92,7 +92,7 @@ test("a piece's label says where it goes, before the rest", () => {
 });
 
 test('a print KML keeps its pieces and outlines the whole set', () => {
-  const set = { sideKm: 40, widthMm: 250, cells: 626, pitchMm: 0.4, exaggeration: 2, baseMm: 3, seaFloorM: 0, depthStretch: 2, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roads: false, cols: 2, rows: 1 };
+  const set = { sideKm: 40, widthMm: 250, cells: 626, pitchMm: 0.4, exaggeration: 2, baseMm: 3, seaFloorM: 0, depthStretch: 2, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roads: false, waterMm: 0, cols: 2, rows: 1 };
   const kml = core.printKml({ centre, set });
   assert.match(kml, /<Data name="mapScale">.*<value>1:80000<\/value>/);
   assert.match(kml, /2 × 1 pieces of 250 mm/);

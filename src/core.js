@@ -898,6 +898,7 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ['buildings', 'Buildings from OpenStreetMap (1 yes, 0 no)', set.buildings ? 1 : 0],
     ['buildingDefaultM', 'Building height where OSM has none (m)', set.buildingDefaultM ?? DEFAULT_BUILDING_M],
     ['roads', 'Motorway, trunk and primary roads from OpenStreetMap, raised (1 yes, 0 no)', set.roads ? 1 : 0],
+    ['waterMm', 'Lakes and wide rivers from OpenStreetMap, sunk (mm, 0 for none)', set.waterMm ?? 0],
     ['piecesAcross', 'Pieces across (each one model width)', cols],
     ['piecesDown', 'Pieces down', rows],
   ];
@@ -950,6 +951,12 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
       derived.push(
         ...Object.keys(ROAD_CLASSES).map((cls) => [`${cls}Km`, `${cls[0].toUpperCase()}${cls.slice(1)} roads printed (km)`, +(r.km[cls] || 0).toFixed(1)]),
         ['roadSource', 'Road data', `OpenStreetMap contributors (ODbL), read ${r.readAt}`],
+      );
+    }
+    if (model.water) {
+      derived.push(
+        ['waterKm2', 'Lakes and rivers sunk (km²)', +model.water.km2.toFixed(2)],
+        ['waterSource', 'Water data', `OpenStreetMap contributors (ODbL), read ${model.water.readAt}`],
       );
     }
   }
@@ -1055,6 +1062,8 @@ export function parsePrintKml(text) {
       buildingDefaultM: values.buildingDefaultM == null ? DEFAULT_BUILDING_M : num('buildingDefaultM', 1, 100),
       // files from before roads have none
       roads: values.roads === '1',
+      // files from before lakes and rivers have none
+      waterMm: values.waterMm == null ? 0 : num('waterMm', 0, 10),
       // files from before pieces are one piece
       cols: values.piecesAcross == null ? 1 : Math.round(num('piecesAcross', 1, PIECES_MAX)),
       rows: values.piecesDown == null ? 1 : Math.round(num('piecesDown', 1, PIECES_MAX)),
@@ -2462,6 +2471,151 @@ export function roadTriangles(roads, zMm, n, { widthMm, mmPerMetre }) {
   return tris;
 }
 
+// ---------- lakes and wide rivers ----------
+
+/** Lakes and rivers come from OpenStreetMap only on prints this size across or smaller, as roads do. */
+export const WATER_MAX_KM = 50;
+/** A patch of water smaller than this on the model (mm²) stays land: the grid could only show it as a pit. */
+export const WATER_MIN_MM2 = 4;
+/** How far round a water point (grid steps) its level looks for the lowest water, so the blur at a shore doesn't lift it. */
+export const WATER_REACH = 2;
+const NOT_WATER = new Set(['wastewater']);
+
+/** The Overpass query for every lake, pond, reservoir and river area in a lon/lat box, or in any of a list of them, with its outline. */
+export function overpassWaterQuery(b) {
+  const parts = overpassBoxes(b).map((box) => ['natural"="water', 'waterway"="riverbank']
+    .map((tag) => `way["${tag}"](${box});relation["${tag}"]["type"="multipolygon"](${box});`).join(''));
+  return `[out:json][timeout:90];(${parts.join('')});out geom;`;
+}
+
+/**
+ * A water area's rings from an OSM element, as [lon, lat] points without the
+ * repeated last one: a closed way's outline, or a multipolygon's outer and
+ * inner rings together, to be filled even-odd so islands stay land. Empty for
+ * anything that isn't open water at the surface.
+ */
+export function waterRings(el) {
+  const tags = el.tags || {};
+  if (NOT_WATER.has(tags.water) || tags.covered === 'yes' || (tags.tunnel && tags.tunnel !== 'no') || tags.location === 'underground') return [];
+  const pts = (g) => g.map((p) => [p.lon, p.lat]);
+  const open = (ring) => ring.slice(0, -1);
+  if (el.type === 'way') {
+    const g = el.geometry || [];
+    const closed = g.length >= 4 && g[0].lon === g[g.length - 1].lon && g[0].lat === g[g.length - 1].lat;
+    return closed ? [open(pts(g))] : [];
+  }
+  if (el.type !== 'relation') return [];
+  return joinRings((el.members || [])
+    .filter((m) => m.type === 'way' && ['outer', 'inner', ''].includes(m.role || '') && m.geometry)
+    .map((m) => pts(m.geometry))).map(open);
+}
+
+/**
+ * An Overpass water reply shared out among the cells it was asked for, as
+ * elementsByCell does, but each water area cut to the cell it is kept in, as
+ * { type: 'water', id, rings }. One lake can be a great many points (all of
+ * Lake Michigan comes back for a print on its shore), and each cell keeps only
+ * its own piece of it. A ring cut to a cell still fills even-odd as the whole
+ * did within the cell, so the pieces of every cell together are the area.
+ */
+export function waterByCell(osm, cells, z) {
+  const out = new Map(cells.map((c) => [`${c.x}/${c.y}`, []]));
+  for (const el of osm.elements || []) {
+    const rings = waterRings(el);
+    if (!rings.length) continue;
+    // by a loop, not lonLatBounds: a big lake's points are too many to spread into Math.min
+    const b = { west: Infinity, east: -Infinity, south: Infinity, north: -Infinity };
+    for (const ring of rings) {
+      for (const [lon, lat] of ring) {
+        if (lon < b.west) b.west = lon; if (lon > b.east) b.east = lon;
+        if (lat < b.south) b.south = lat; if (lat > b.north) b.north = lat;
+      }
+    }
+    for (const c of cellsForBounds(b, z)) {
+      const list = out.get(`${c.x}/${c.y}`);
+      if (!list) continue;
+      const cb = cellBounds(c, z);
+      const box = [[cb.west, cb.south], [cb.east, cb.south], [cb.east, cb.north], [cb.west, cb.north]];
+      const cut = rings.map((r) => clipToConvex(r, box)).filter(Boolean);
+      if (cut.length) list.push({ type: 'water', id: `${el.type}${el.id}@${c.x}/${c.y}`, rings: cut });
+    }
+  }
+  return out;
+}
+
+/**
+ * The water on an n x n grid (row 0 along the model's top), as a Uint8Array
+ * with a 1 for each point inside a water area of osm (from waterByCell) and
+ * above sea level: water at or under it is the sea's, cut flat already.
+ * frame places the lon/lat rings on the model. Patches smaller than
+ * WATER_MIN_MM2 are left out.
+ */
+export function waterPoints(osm, heights, n, widthMm, frame) {
+  const step = widthMm / (n - 1);
+  const water = new Uint8Array(n * n);
+  for (const el of osm.elements || []) {
+    // Every ring's crossings of each row together, filled in pairs: even-odd, so an island stays land.
+    const rows = new Map();
+    for (const ring of el.rings || []) {
+      const g = ring.map(([lon, lat]) => { const [x, y] = frame.toMm(lon, lat); return [x / step, n - 1 - y / step]; });
+      for (let a = 0, b = g.length - 1; a < g.length; b = a++) {
+        const [x0, y0] = g[b], [x1, y1] = g[a];
+        if (y0 === y1) continue;
+        const lo = Math.max(0, Math.ceil(Math.min(y0, y1))), hi = Math.min(n - 1, Math.ceil(Math.max(y0, y1)) - 1);
+        for (let j = lo; j <= hi; j++) (rows.get(j) || rows.set(j, []).get(j)).push(x0 + ((j - y0) * (x1 - x0)) / (y1 - y0));
+      }
+    }
+    for (const [j, xs] of rows) {
+      xs.sort((p, q) => p - q);
+      for (let k = 0; k + 1 < xs.length; k += 2) {
+        for (let i = Math.max(0, Math.ceil(xs[k])); i <= Math.min(n - 1, Math.floor(xs[k + 1])); i++) water[j * n + i] = 1;
+      }
+    }
+  }
+  for (let k = 0; k < n * n; k++) if (!(heights[k] > 0)) water[k] = 0;
+  // Drop the patches too small to show, in 4-connected pieces as the shoreline finds the sea.
+  const minPoints = WATER_MIN_MM2 / (step * step);
+  const seen = new Uint8Array(n * n);
+  for (let start = 0; start < n * n; start++) {
+    if (!water[start] || seen[start]) continue;
+    const patch = [], stack = [start];
+    seen[start] = 1;
+    while (stack.length) {
+      const k = stack.pop();
+      patch.push(k);
+      const i = k % n, j = (k - i) / n;
+      for (const q of [i > 0 ? k - 1 : -1, i < n - 1 ? k + 1 : -1, j > 0 ? k - n : -1, j < n - 1 ? k + n : -1]) {
+        if (q >= 0 && water[q] && !seen[q]) { seen[q] = 1; stack.push(q); }
+      }
+    }
+    if (patch.length < minPoints) for (const k of patch) water[k] = 0;
+  }
+  return water;
+}
+
+/**
+ * Sinks the water (from waterPoints) into a millimetre grid: each water point
+ * to depthMm under the lowest water within WATER_REACH grid steps of it, so
+ * a lake is one flat level under its shore and a river steps down with its
+ * valley, never leaving less than minMm of model under it. Still a height
+ * grid, so the STL stays closed.
+ */
+export function carveWater(mm, water, n, depthMm, minMm = 0.6) {
+  const r = WATER_REACH;
+  return mm.map((z, k) => {
+    if (!water[k]) return z;
+    const i = k % n, j = (k - i) / n;
+    let low = z;
+    for (let jj = Math.max(0, j - r); jj <= Math.min(n - 1, j + r); jj++) {
+      for (let ii = Math.max(0, i - r); ii <= Math.min(n - 1, i + r); ii++) {
+        const q = jj * n + ii;
+        if (water[q] && mm[q] < low) low = mm[q];
+      }
+    }
+    return Math.max(Math.min(z, minMm), Math.min(z, low - depthMm));
+  });
+}
+
 // ---------- zip ----------
 
 const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
@@ -2529,9 +2683,9 @@ export function zipFiles(files, made = new Date()) {
  * print, so a print that moves, grows or turns over ground already read needs
  * no new query. Buildings come in zoom 16 cells (610 m across at the equator,
  * 450 m at Boston), so the box asked for is at most a cell wider each way than
- * a 2 km print; roads in zoom 13 cells (4.9 km, 3.6 km).
+ * a 2 km print; roads and water in zoom 13 cells (4.9 km, 3.6 km).
  */
-export const OSM_CELL_ZOOM = { buildings: 16, roads: 13 };
+export const OSM_CELL_ZOOM = { buildings: 16, roads: 13, water: 13 };
 /** Saved cells older than this many days are read again. */
 export const OSM_CELL_DAYS = 90;
 
