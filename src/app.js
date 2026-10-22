@@ -1409,7 +1409,7 @@ function renderPrintTable() {
     ...(split ? [['Base', `${set.baseMm} mm under ${core.formatHeight(m.lowM, state.units)}, the lowest point of the set, on every piece, so their sides meet at the same height`]] : []),
     ['Lowest to highest', `${core.formatHeight(m.lowM, state.units)} to ${core.formatHeight(m.highM, state.units)}`],
     ['Map scale', `1 : ${scale.toLocaleString('en-US')}`],
-    ['Height stretch', `× ${set.exaggeration}, so 1 mm of model is ${core.formatHeight(1 / (scaled.mmPerMetre * set.exaggeration), state.units)}`],
+    ['Height stretch', `× ${set.exaggeration}, so 1 mm of model is ${core.formatHeight(1 / (scaled.mmPerMetre * set.exaggeration), state.units)}${suggestText(m)}`],
     ...(set.seaFloorM > 0 ? [['Sea floor', seaFloorText(set, scaled)]] : []),
     ...(set.shoreMm > 0 ? [['Shoreline', shoreText(set, pieces.some((p) => p.shore.includes(1)))]] : []),
     ...(first.label ? [['Label underneath', `${split ? `On ${first.name}: ` : ''}${labelText(first.label)}`]] : []),
@@ -1418,6 +1418,21 @@ function renderPrintTable() {
   ];
   $('print-table').innerHTML = `<tbody>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</tbody>`;
 }
+
+/** The stretch this ground suggests, with a button to use it, or nothing when it is already in use. */
+function suggestText({ set, lowM, highM }) {
+  // Only the land counts: the sea floor has its own stretch.
+  const want = core.suggestStretch(highM - Math.max(lowM, 0), set.sideKm);
+  if (want == null) return '';
+  if (want === set.exaggeration) return '; the stretch suggested for ground this steep';
+  return `; ground this steep suggests × ${want} <button type="button" class="suggest" data-stretch="${want}">Use × ${want}</button>`;
+}
+$('print-table').addEventListener('click', (e) => {
+  const value = Number(e.target.closest('button.suggest')?.dataset.stretch);
+  if (!value) return;
+  setStretch(value);
+  buildModel();
+});
 
 /** A bearing as the nearest of the 16 compass points. */
 function compass(deg) {

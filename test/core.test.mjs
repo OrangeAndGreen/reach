@@ -388,6 +388,20 @@ test('print heights: the sea floor goes down to its limit, with its own stretch'
   assert.equal(core.printHeights([0, 50], set).seaMm, null);
 });
 
+test('suggested stretch grows as the ground flattens, by its square root, on a stop', () => {
+  assert.equal(core.suggestStretch(1600, 20), 1.5); // Mt Washington
+  assert.equal(core.suggestStretch(100, 20), 6); // 25 times flatter, 4 times the stretch
+  assert.equal(core.suggestStretch(3500, 100), 2.25); // the Alps
+  assert.ok(core.STRETCH_STOPS.includes(core.suggestStretch(237, 13)));
+});
+
+test('suggested stretch stays within x1 to x20, and needs land relief', () => {
+  assert.equal(core.suggestStretch(2000, 1), 1);
+  assert.equal(core.suggestStretch(5, 100), 20);
+  assert.equal(core.suggestStretch(0, 10), null);
+  assert.equal(core.suggestStretch(-50, 10), null);
+});
+
 test('print heights: depth stretch follows the height stretch unless given', () => {
   const p = core.printHeights([-100, 100], { sideKm: 10, widthMm: 100, exaggeration: 3, baseMm: 0, seaFloorM: 11000 });
   near(p.reliefMm, 6, 1e-9);
