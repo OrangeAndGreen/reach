@@ -309,8 +309,22 @@
             <label for="print-roads">Roads</label>
             <select id="print-roads">
               <option value="none" selected>None</option>
-              <option value="osm">Main roads, raised</option>
+              <option value="osm">Main roads</option>
             </select>
+          </div>
+        </div>
+        <div id="print-road-levels" class="row" hidden>
+          <div class="field">
+            <label for="print-road-motorway">Motorways</label>
+            <select id="print-road-motorway" class="level" data-level="1.2"></select>
+          </div>
+          <div class="field">
+            <label for="print-road-trunk">Trunk roads</label>
+            <select id="print-road-trunk" class="level" data-level="0.8"></select>
+          </div>
+          <div class="field">
+            <label for="print-road-primary">Primary roads</label>
+            <select id="print-road-primary" class="level" data-level="0.4"></select>
           </div>
         </div>
         <p id="print-roads-hint" class="hint" hidden></p>
@@ -318,10 +332,23 @@
           <div class="field">
             <label for="print-water">Lakes and rivers</label>
             <select id="print-water">
-              <option value="0" selected>None</option>
-              <option value="0.6">Sunk 0.6 mm</option>
-              <option value="1.2">Sunk 1.2 mm</option>
+              <option value="none" selected>None</option>
+              <option value="osm">From OpenStreetMap</option>
             </select>
+          </div>
+        </div>
+        <div id="print-water-levels" class="row" hidden>
+          <div class="field">
+            <label for="print-water-lakes">Lakes</label>
+            <select id="print-water-lakes" class="level" data-level="-0.6"></select>
+          </div>
+          <div class="field">
+            <label for="print-water-wide">Wide rivers</label>
+            <select id="print-water-wide" class="level" data-level="-0.6"></select>
+          </div>
+          <div class="field">
+            <label for="print-water-narrow">Narrow rivers</label>
+            <select id="print-water-narrow" class="level" data-level="-0.6"></select>
           </div>
         </div>
         <p id="print-water-hint" class="hint" hidden></p>

@@ -110,7 +110,7 @@ test('a road in a cutting still stands over the banks beside it', () => {
 
 test('a print KML keeps the roads setting and the length of each class printed', () => {
   const centre = { name: 'Chicago Loop', lat: 41.88, lon: -87.63 };
-  const set = { sideKm: 10, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1, baseMm: 3, seaFloorM: 0, depthStretch: 1, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roads: true, waterMm: 0, cols: 1, rows: 1 };
+  const set = { sideKm: 10, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1, baseMm: 3, seaFloorM: 0, depthStretch: 1, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: { motorway: 1.2, trunk: -0.8, primary: 0 }, waterMm: core.NO_WATER, cols: 1, rows: 1 };
   const model = { zoom: 13, pixelM: 14, lowM: 170, highM: 200, reliefMm: 0.4, triangles: 90000,
     roads: { count: 40, km: { motorway: 31.24, primary: 88 }, triangles: 40000, readAt: '2026-10-22' } };
   const kml = core.printKml({ centre, set, model });
@@ -123,4 +123,43 @@ test('a road with a hairpin still closes', () => {
   const n = 21, widthMm = 20;
   const tris = core.roadTriangles([{ cls: 'trunk', line: [[2, 9], [15, 9], [15.2, 10], [2, 11]] }], flatGround(n, 1), n, { widthMm, mmPerMetre: 0.001 });
   assert.ok(core.isClosed(tris));
+});
+
+test('roadTriangles builds only the classes raised, at their own level', () => {
+  const n = 21, widthMm = 20;
+  const roads = [{ cls: 'motorway', line: [[2, 6], [18, 6]] }, { cls: 'primary', line: [[2, 14], [18, 14]] }];
+  const levels = { motorway: 2, trunk: 0, primary: -0.8 };
+  const tris = core.roadTriangles(roads, flatGround(n, 1), n, { widthMm, mmPerMetre: 0.001, levels });
+  assert.ok(core.isClosed(tris));
+  near(Math.max(...tris.map((p) => p[2])), 3, 1e-9);
+  assert.ok(tris.every((p) => p[1] < 10)); // the primary is left to carveRoads
+});
+
+test('a sunk road is a groove its depth under the ground along it, and leaves the water alone', () => {
+  const n = 21, widthMm = 20;
+  const zMm = flatGround(n, 3);
+  const skip = new Uint8Array(n * n);
+  skip[10 * n + 15] = 1; // a bridge over a river
+  const roads = [{ cls: 'trunk', line: [[2, 10], [18, 10]] }, { cls: 'motorway', line: [[10, 2], [10, 6]] }];
+  const { mm, mask } = core.carveRoads(zMm, roads, n, { widthMm, mmPerMetre: 0.001, levels: { motorway: 1.2, trunk: -0.8, primary: 0 }, skip });
+  near(mm[10 * n + 5], 2.2, 1e-9);
+  assert.equal(mask[10 * n + 5], 1);
+  near(mm[10 * n + 15], 3, 1e-9);
+  near(mm[16 * n + 10], 3, 1e-9); // the raised motorway isn't cut
+  near(mm[5 * n + 5], 3, 1e-9);
+});
+
+test('a sunk road keeps the model under it', () => {
+  const n = 21, widthMm = 20;
+  const { mm } = core.carveRoads(flatGround(n, 1), [{ cls: 'primary', line: [[2, 10], [18, 10]] }], n,
+    { widthMm, mmPerMetre: 0.001, levels: { motorway: 0, trunk: 0, primary: -2 } });
+  near(mm[10 * n + 10], 0.6, 1e-9);
+});
+
+test('a KML from before each road class had its own level raises them as they were', () => {
+  const centre = { name: 'Chicago Loop', lat: 41.88, lon: -87.63 };
+  const set = { sideKm: 10, widthMm: 120, cells: 201, exaggeration: 1, baseMm: 3, roadMm: core.NO_ROADS, waterMm: core.NO_WATER };
+  const kml = core.printKml({ centre, set }).replace(/ *<Data name="(motorway|trunk|primary)Mm">[\s\S]*?<\/Data>\n/g, '')
+    .replace('</ExtendedData>', '<Data name="roads"><value>1</value></Data></ExtendedData>');
+  assert.deepEqual(core.parsePrintKml(kml).set.roadMm, core.ROAD_LEVELS);
 });

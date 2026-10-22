@@ -18,7 +18,7 @@ Three tools on one map:
   Central Park. On the map, drag the centre dot to move it or the outline to
   resize it: the shape grows about its centre, a rectangle's side moves alone,
   and sizes snap to 10 m, 100 m or 1 km as they grow. On prints of 2 km or less across it can raise the buildings
-  from OpenStreetMap too, and on prints of 50 km or less the main roads, raised, and the lakes and rivers, sunk 0.6 or 1.2 mm. Choose the model width (the shape's width across), the detail, a height stretch and
+  from OpenStreetMap too, and on prints of 50 km or less the main roads and the lakes and rivers. Each road class (motorway, trunk, primary) and each kind of water (lakes, wide rivers, narrow rivers) has its own level: raised or sunk 0.4 to 2 mm, or left out. By default roads are raised 1.2, 0.8 and 0.4 mm and water is sunk 0.6 mm. Choose the model width (the shape's width across), the detail, a height stretch and
   the base thickness, and whether the sea floor comes too (down to 50 m, 200 m,
   1,000 m or all the way, with its own depth stretch), and whether to mark the
   shoreline with a groove or a ridge (0.4 or 0.8 mm) to paint or just to see the coast by. It can also cut a label 0.6 mm up into the underside, mirrored so it reads when you turn the print over: the centre's coordinates, the ground covered and the height stretch (and the depth stretch, when the sea floor has its own), under an arrow pointing north, with up to three lines of your own text between the arrow and them, or your text alone. The corners are rounded, 5 mm by default (or 10 mm, or square), so a wide slab is slower to lift off the bed: a square's ground is squeezed into the curve, another shape's is cut off along it, and a star rounds only its points. A preview you can turn shows the model, beside its real
@@ -28,7 +28,7 @@ Three tools on one map:
   120 × 120 × 17.6 mm at ×1.5. **Download KML** saves the outline for Google
   Earth along with every setting (centre, size, width, detail, stretch, base, sea floor, shoreline, label and its text, corners, shape, turn)
   and what came of them (tile zoom, metres per pixel, lowest and highest point,
-  model height, scale, triangle count, STL file name). **Open KML** reads one
+  model height, scale, triangle count, STL file name). A KML from before the per-class levels opens with its roads raised as they were and its water all sunk its one depth. **Open KML** reads one
   back and builds the same STL again. **Download map image** saves the map
   layer on show (Terrain or Streets) cropped to the print (turned to match, and clear outside its shape), as a PNG of up to
   2,048 px with the map's credit in the corner.
@@ -137,10 +137,14 @@ ES modules, which is why it needs the little server rather than file://.
   (`building=roof`) and underground buildings are skipped. A 2 km square of
   Manhattan is about 3,000 buildings and a 9 MB STL.
 - **Roads.** Motorway, trunk and primary ways, joined end to end per class,
-  each become their own closed solid: a ribbon 1.6, 1.2 or 0.8 mm wide (or the
-  real carriageway, 25, 20 or 14 m, where a small print makes that wider),
-  whose top is the ground along it averaged over 1.5 mm either way plus a lift
-  of 1.2, 0.8 or 0.4 mm, and whose floor sits just under the terrain. Tunnels
+  are 1.6, 1.2 or 0.8 mm wide (or the real carriageway, 25, 20 or 14 m, where
+  a small print makes that wider), at their class's level over or under the
+  ground along them averaged over 1.5 mm either way. A raised road is its own
+  closed solid, a ribbon whose floor sits just under the terrain. A sunk road
+  is a groove cut into the terrain grid, the points within half its width and
+  the point nearest its line all along, so it never breaks on a diagonal; it
+  leaves lakes and rivers' areas alone, where the road crosses on a bridge, and
+  keeps 0.6 mm of model under it. Tunnels
   drop out and ramps aren't fetched. Where solids cross, the slicer merges
   them. Classes are as OSM tags them: Chicago's arterials (Cermak, Roosevelt,
   Michigan Avenue) are secondary, so a 10 km Loop print shows only its
@@ -148,8 +152,12 @@ ES modules, which is why it needs the little server rather than file://.
 - **Lakes and rivers.** Water areas (`natural=water` and `waterway=riverbank`,
   ways and multipolygons, but not wastewater or anything covered) fill the grid
   points inside them, even-odd so islands stay land. Water at or under sea level is left to the sea, and
-  patches under 4 mm² on the model are dropped. Each point sinks 0.6 or 1.2 mm under
-  the lowest water within two grid steps of it. A lake reads flat in the
+  patches under 4 mm² on the model are dropped. Lakes and wide rivers each
+  have their own level: a riverbank, or water tagged as a river, canal or
+  stream, is a wide river, and the rest is a lake (where they overlap, the
+  lake). Each point sinks its depth under, or is raised its height over,
+  the lowest water within two grid steps of it. Raised water only lifts the
+  ground and never cuts it. A lake reads flat in the
   elevation data, so it prints as one level under its shore, and the window reaches past the
   blur at the shore that would lift the edge. A river steps down its valley.
   The water is carved before buildings and roads are stood on the terrain, so a
@@ -162,7 +170,9 @@ ES modules, which is why it needs the little server rather than file://.
   lowest ground the river has passed over since its source, read along the
   line in the way OSM draws it, downstream. So a channel only ever steps down,
   cutting through the bumps where the elevation data and the mapped line
-  disagree. Where rivers share a point (a tributary joining, a river drawn in
+  disagree. Raised, the same level plus the height makes a ridge, which lifts
+  the ground but never cuts it, so it can vanish over a bump in the data.
+  Where rivers share a point (a tributary joining, a river drawn in
   several ways) the lowest level reaching it goes on down each. Lines inside a
   lake or river area are left to it. A 20 km square around Bartlett, NH cuts
   76 miles of river channel. A river's level starts

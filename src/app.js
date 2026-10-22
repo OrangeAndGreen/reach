@@ -763,8 +763,8 @@ function printSettings() {
     bearing: Number($('print-turn').value),
     buildings: $('print-buildings').value === 'osm' && Number($('print-side').value) <= core.BUILDINGS_MAX_KM,
     buildingDefaultM: Number($('print-default').value),
-    roads: $('print-roads').value === 'osm' && Number($('print-side').value) <= core.ROADS_MAX_KM,
-    waterMm: Number($('print-side').value) <= core.WATER_MAX_KM ? Number($('print-water').value) : 0,
+    roadMm: $('print-roads').value === 'osm' && Number($('print-side').value) <= core.ROADS_MAX_KM ? levelsOf('road', core.ROAD_CLASSES) : core.NO_ROADS,
+    waterMm: $('print-water').value === 'osm' && Number($('print-side').value) <= core.WATER_MAX_KM ? levelsOf('water', core.WATER_KINDS) : core.NO_WATER,
     cols,
     rows,
   };
@@ -777,6 +777,16 @@ function printSettings() {
 function wholeShape(set) {
   if (set.cols * set.rows === 1) return set;
   return { ...set, widthMm: set.widthMm * set.cols, shape: 'rectangle', aspect: set.cols / set.rows, cols: 1, rows: 1 };
+}
+
+/** The level selects of roads or water (prefix), as { class or kind: mm }. */
+function levelsOf(prefix, kinds) {
+  return Object.fromEntries(Object.keys(kinds).map((k) => [k, Number($(`print-${prefix}-${k}`).value)]));
+}
+
+/** "Raised 0.8 mm", "Sunk 0.6 mm" or "Left out", for a level select or the table. */
+function levelText(mm) {
+  return mm > 0 ? `Raised ${mm} mm` : mm < 0 ? `Sunk ${-mm} mm` : 'Left out';
 }
 
 /** The shoreline select's value, "groove-0.4" or "ridge-0.8" or "0", as settings. */
@@ -1038,13 +1048,13 @@ async function osmArea(kind, bounds, onFetch) {
   const keyOf = (c) => `${kind}/${z}/${c.x}/${c.y}`;
   const saved = await store.getMany('osm', cells.map(keyOf));
   const today = new Date().toISOString().slice(0, 10);
-  // water cells kept from before river lines were fetched have none, so they are read again
-  const missing = cells.filter((c, i) => !saved[i] || core.cellStale(saved[i].readAt, today) || (kind === 'water' && !saved[i].rivers));
+  // water cells kept from before river lines were fetched, or lakes told from rivers' areas, are read again
+  const missing = cells.filter((c, i) => !saved[i] || core.cellStale(saved[i].readAt, today) || (kind === 'water' && !saved[i].kinds));
   if (missing.length) {
     onFetch?.();
     const { osm, readAt } = await overpass(OSM_QUERY[kind](core.cellBoxes(missing, z)));
     const parts = (kind === 'water' ? core.waterByCell : core.elementsByCell)(osm, missing, z);
-    const fresh = missing.map((c) => [keyOf(c), { elements: parts.get(`${c.x}/${c.y}`), readAt, ...(kind === 'water' && { rivers: true }) }]);
+    const fresh = missing.map((c) => [keyOf(c), { elements: parts.get(`${c.x}/${c.y}`), readAt, ...(kind === 'water' && { kinds: true }) }]);
     const got = new Map(fresh);
     cells.forEach((c, i) => { saved[i] = got.get(keyOf(c)) || saved[i]; });
     store.putMany('osm', fresh).then(showKept);
@@ -1105,7 +1115,7 @@ async function buildModel() {
       if (run !== modelRun) return;
     }
     let roadReply = null;
-    if (set.roads) {
+    if (core.anyLevel(set.roadMm)) {
       const corner = plan.pieces.flatMap(({ frame: { bounds: b } }) => [{ lon: b.west, lat: b.south }, { lon: b.east, lat: b.north }]);
       try {
         roadReply = await osmArea('roads', core.lonLatBounds(corner), () => status('print', 'Fetching the roads from OpenStreetMap…'));
@@ -1115,7 +1125,7 @@ async function buildModel() {
       if (run !== modelRun) return;
     }
     let waterReply = null;
-    if (set.waterMm > 0) {
+    if (core.anyLevel(set.waterMm)) {
       const corner = plan.pieces.flatMap(({ frame: { bounds: b } }) => [{ lon: b.west, lat: b.south }, { lon: b.east, lat: b.north }]);
       try {
         waterReply = await osmArea('water', core.lonLatBounds(corner), () => status('print', 'Fetching the lakes and rivers from OpenStreetMap…'));
@@ -1156,27 +1166,44 @@ async function buildModel() {
       const scaled = core.printHeights(heights, { ...pieceSet, lowM }, cut?.used);
       const shore = set.shoreMm > 0 ? core.shorePoints(heights, n) : null;
       if (shore) scaled.mm = core.markShore(scaled.mm, shore, set.shoreMm, set.shoreRidge);
-      // Sunk before the buildings and roads are stood on it, so they reach down into it rather than float.
+      // Water and sunk roads are cut before the buildings and raised roads are stood on the ground, so they reach down into it rather than float.
       let water = null;
       if (waterReply) {
-        const mask = core.waterPoints(waterReply.osm, heights, n, set.widthMm, piece.frame);
-        const rivers = core.carveRivers(scaled.mm, core.riverLines(waterReply.osm, piece.frame), n,
-          { widthMm: set.widthMm, mmPerMetre: scaled.mmPerMetre, depthMm: set.waterMm, skip: mask, heights });
-        scaled.mm = core.carveWater(rivers.mm, mask, n, set.waterMm);
+        const level = set.waterMm;
+        const { lakes, wide } = core.waterKinds(waterReply.osm, heights, n, set.widthMm, piece.frame);
+        const areas = lakes.map((v, k) => v | wide[k]);
+        let rivers = { mm: scaled.mm, mask: new Uint8Array(n * n), km: 0 };
+        if (level.narrow) {
+          rivers = core.carveRivers(scaled.mm, core.riverLines(waterReply.osm, piece.frame), n,
+            { widthMm: set.widthMm, mmPerMetre: scaled.mmPerMetre, depthMm: -level.narrow, skip: areas, heights });
+        }
+        let mm = rivers.mm;
+        if (level.lakes) mm = core.carveWater(mm, lakes, n, -level.lakes);
+        if (level.wide) mm = core.carveWater(mm, wide, n, -level.wide);
+        scaled.mm = mm;
+        // blue in the preview: the water printed
+        const mask = areas.map((_, k) => (level.lakes && lakes[k]) || (level.wide && wide[k]) || rivers.mask[k] ? 1 : 0);
         const cellKm = set.widthMm / (n - 1) / scaled.mmPerMetre / 1000;
-        water = { mask, km2: mask.reduce((s, v) => s + v, 0) * cellKm * cellKm, riverKm: rivers.km, readAt: waterReply.readAt };
-        for (let k = 0; k < n * n; k++) if (rivers.mask[k]) mask[k] = 1; // blue in the preview too
+        const km2 = (points) => points.reduce((s, v) => s + v, 0) * cellKm * cellKm;
+        water = { mask, areas, lakesKm2: level.lakes ? km2(lakes) : 0, wideKm2: level.wide ? km2(wide) : 0, riverKm: rivers.km, readAt: waterReply.readAt };
+      }
+      let ways = null, roadMask = null;
+      if (roadReply) {
+        ways = core.roadLines(roadReply.osm, piece.frame.bounds, set.widthMm, { frame: piece.frame, pieces: outline?.pieces })
+          .filter(({ cls }) => set.roadMm[cls]);
+        const sunk = core.carveRoads(scaled.mm, ways, n, { ...pieceSet, ...scaled, levels: set.roadMm, skip: water?.areas, heights });
+        scaled.mm = sunk.mm;
+        roadMask = sunk.mask;
       }
       const extra = placed ? core.buildingTriangles(placed.buildings, scaled.mm, n, { ...pieceSet, ...scaled }) : [];
       if (buildings) buildings.triangles = extra.length / 3;
       let roads = null;
-      if (roadReply) {
-        const lines = core.roadLines(roadReply.osm, piece.frame.bounds, set.widthMm, { frame: piece.frame, pieces: outline?.pieces });
-        const roadTris = core.roadTriangles(lines, scaled.mm, n, { ...pieceSet, ...scaled });
+      if (ways) {
+        const roadTris = core.roadTriangles(ways, scaled.mm, n, { ...pieceSet, ...scaled, levels: set.roadMm });
         for (const p of roadTris) extra.push(p);
         const km = {};
-        for (const { cls, line } of lines) km[cls] = (km[cls] || 0) + core.lineLength(line) / scaled.mmPerMetre / 1000;
-        roads = { count: lines.length, km, triangles: roadTris.length / 3, readAt: roadReply.readAt };
+        for (const { cls, line } of ways) km[cls] = (km[cls] || 0) + core.lineLength(line) / scaled.mmPerMetre / 1000;
+        roads = { count: ways.length, km, triangles: roadTris.length / 3, mask: roadMask, readAt: roadReply.readAt };
       }
       const { lines, wrap } = core.labelLines(centre, set, split ? piece.name : null);
       const label = lines.length ? core.bottomLabel(lines, scaled.mm, n, set.widthMm, outline, set.bearing, wrap) : null;
@@ -1253,7 +1280,8 @@ function sumRoads(pieces) {
 function sumWater(pieces) {
   const all = pieces.map((p) => p.water).filter(Boolean);
   if (!all.length) return null;
-  return { km2: all.reduce((s, w) => s + w.km2, 0), riverKm: all.reduce((s, w) => s + w.riverKm, 0), readAt: all[0].readAt };
+  const sum = (k) => all.reduce((s, w) => s + w[k], 0);
+  return { lakesKm2: sum('lakesKm2'), wideKm2: sum('wideKm2'), riverKm: sum('riverKm'), readAt: all[0].readAt };
 }
 
 /** The preview's piece list: the whole set, then each piece. Hidden for a print in one piece. */
@@ -1402,22 +1430,44 @@ function showBuildingControls() {
 }
 $('print-buildings').addEventListener('change', () => { showBuildingControls(); buildModel(); });
 showBuildingControls();
+// Every level select offers the same levels, starting at its own default.
+for (const el of document.querySelectorAll('select.level')) {
+  el.replaceChildren(...core.LEVELS_MM.map((mm) => new Option(levelText(mm), String(mm))));
+  el.value = el.dataset.level;
+  el.addEventListener('change', () => { showRoadControls(); showWaterControls(); buildModel(); });
+}
 function showRoadControls() {
   const fits = Number($('print-side').value) <= core.ROADS_MAX_KM;
-  const c = core.ROAD_CLASSES;
-  $('print-roads-hint').hidden = $('print-roads').value !== 'osm';
-  $('print-roads-hint').textContent = fits
-    ? `Each motorway, trunk and primary road is its own solid standing on the ground, ${c.motorway.widthMm}, ${c.trunk.widthMm} and ${c.primary.widthMm} mm wide and raised ${c.motorway.liftMm}, ${c.trunk.liftMm} and ${c.primary.liftMm} mm, its top smoothed along it. Tunnels and ramps are left out.`
-    : `Roads need a print of ${core.ROADS_MAX_KM} km or less across, so this one has none.`;
+  const wanted = $('print-roads').value === 'osm';
+  const c = core.ROAD_CLASSES, level = levelsOf('road', c);
+  $('print-road-levels').hidden = !wanted || !fits;
+  $('print-roads-hint').hidden = !wanted;
+  const raised = Object.values(level).some((v) => v > 0), sunk = Object.values(level).some((v) => v < 0);
+  $('print-roads-hint').textContent = !fits
+    ? `Roads need a print of ${core.ROADS_MAX_KM} km or less across, so this one has none.`
+    : !raised && !sunk ? 'Every class is left out, so the print has no roads.'
+    : [`Motorways, trunk and primary roads are ${c.motorway.widthMm}, ${c.trunk.widthMm} and ${c.primary.widthMm} mm wide, each class at its own level over or under the ground along it, smoothed so it reads as graded.`,
+      raised && 'A raised road is its own solid standing on the ground.',
+      sunk && 'A sunk road is a groove cut into the ground, which leaves the water it crosses alone.',
+      'Tunnels and ramps are left out.'].filter(Boolean).join(' ');
 }
 $('print-roads').addEventListener('change', () => { showRoadControls(); buildModel(); });
 showRoadControls();
 function showWaterControls() {
   const fits = Number($('print-side').value) <= core.WATER_MAX_KM;
-  $('print-water-hint').hidden = $('print-water').value === '0';
-  $('print-water-hint').textContent = fits
-    ? `Lakes, ponds, reservoirs and rivers mapped as areas in OpenStreetMap are sunk ${$('print-water').value} mm under the lowest water near each point, so a lake prints as one flat level and a river steps down its valley. Islands stay land, and water under ${core.WATER_MIN_MM2} mm² on the model is left out. Rivers mapped only as lines are cut as channels at least ${core.RIVER_WIDTH_MM} mm wide, ${$('print-water').value} mm under the lowest ground upstream, so they never climb. Streams and canals are left out.`
-    : `Lakes and rivers need a print of ${core.WATER_MAX_KM} km or less across, so this one has none.`;
+  const wanted = $('print-water').value === 'osm';
+  const level = levelsOf('water', core.WATER_KINDS);
+  $('print-water-levels').hidden = !wanted || !fits;
+  $('print-water-hint').hidden = !wanted;
+  const how = (mm) => (mm > 0 ? `raised ${mm} mm over` : `sunk ${-mm} mm under`);
+  $('print-water-hint').textContent = !fits
+    ? `Lakes and rivers need a print of ${core.WATER_MAX_KM} km or less across, so this one has none.`
+    : !core.anyLevel(level) ? 'Every kind is left out, so the print has no water.'
+    : [level.lakes && `Lakes, ponds and reservoirs are ${how(level.lakes)} the lowest water near each point, so each prints as one flat level.`,
+      level.wide && `Rivers and canals mapped as areas are ${how(level.wide)} the lowest water near each point, so they step down their valleys.`,
+      (level.lakes || level.wide) && `Islands stay land, and water under ${core.WATER_MIN_MM2} mm² on the model is left out.`,
+      level.narrow && `Rivers mapped only as lines are ${level.narrow > 0 ? 'ridges' : 'channels'} at least ${core.RIVER_WIDTH_MM} mm wide, ${how(level.narrow)} the lowest ground upstream, so they never climb.`,
+      'Raised water only lifts the ground; it never cuts it. Streams are left out.'].filter(Boolean).join(' ');
 }
 $('print-water').addEventListener('change', () => { showWaterControls(); buildModel(); });
 showWaterControls();
@@ -1543,7 +1593,7 @@ function pieceGeometry(m) {
     for (let v = 0; v < 3; v++) for (let k = 0; k < 3; k++) nrm[t * 9 + v * 3 + k] = view.getFloat32(o + k * 4, true);
   }
   // The sea floor in blue: top-surface vertices below sea level (the top comes first in the STL).
-  // The shoreline line dark, lakes and rivers blue like the sea, buildings, written next to last, in grey, and roads, written last, darker.
+  // The shoreline line dark, lakes and rivers blue like the sea, sunk roads dark grey, buildings, written next to last, in grey, and raised roads, written last, darker.
   const colours = new Float32Array(count * 9);
   const land = new THREE.Color(0xc9b79c), sea = new THREE.Color(0x6f9bc7), built = new THREE.Color(0x9a9da3), groove = new THREE.Color(0x4a3f33), road = new THREE.Color(0x55595f);
   const n = m.set.cells, step = m.set.widthMm / (n - 1);
@@ -1553,12 +1603,14 @@ function pieceGeometry(m) {
   const gridIndex = (v) => (n - 1 - Math.round(pos[v * 3 + 1] / step)) * n + Math.round(pos[v * 3] / step);
   const onShore = (v) => m.shore[gridIndex(v)];
   const onWater = (v) => m.water.mask[gridIndex(v)];
+  const onRoad = (v) => m.roads.mask[gridIndex(v)];
   // a label pocket: a triangle with no point above the pocket's depth, and one off the bed
   const depth = m.label?.depthMm;
   const inPocket = (t) => depth && [0, 1, 2].every((k) => pos[(t * 3 + k) * 3 + 2] <= depth + 1e-4) && [0, 1, 2].some((k) => pos[(t * 3 + k) * 3 + 2] > 1e-4);
   for (let v = 0; v < count * 3; v++) {
     const c = v >= firstRoad ? road : v >= firstBuilt ? built
       : (m.shore && v < topVertices && onShore(v)) || (v >= topVertices && inPocket(Math.floor(v / 3))) ? groove
+      : m.roads?.mask && v < topVertices && onRoad(v) ? road
       : (m.scaled.seaMm != null && v < topVertices && pos[v * 3 + 2] < m.scaled.seaMm - 1e-3) || (m.water && v < topVertices && onWater(v)) ? sea : land;
     colours[v * 3] = c.r; colours[v * 3 + 1] = c.g; colours[v * 3 + 2] = c.b;
   }
@@ -1595,7 +1647,7 @@ function renderPrintTable() {
     ...(set.shoreMm > 0 ? [['Shoreline', shoreText(set, pieces.some((p) => p.shore.includes(1)))]] : []),
     ...(first.label ? [['Label underneath', `${split ? `On ${first.name}: ` : ''}${labelText(first.label)}`]] : []),
     ...(m.buildings ? [['Buildings', buildingsText(m)]] : []),
-    ...(m.roads ? [['Roads', roadsText(m.roads)]] : []),
+    ...(m.roads ? [['Roads', roadsText(m)]] : []),
     ...(m.water ? [['Lakes and rivers', waterText(m)]] : []),
     ['STL', `${split ? `${pieces.length} files in one ZIP, ` : ''}${stlMb.toFixed(1)} MB, ${triangles.toLocaleString('en-US')} triangles`],
   ];
@@ -1655,20 +1707,21 @@ function buildingsText({ buildings: b, set }) {
   return parts.join('; ');
 }
 
-function roadsText(r) {
-  if (!r.count) return 'No motorway, trunk or primary road in OpenStreetMap here';
+function roadsText({ roads: r, set }) {
+  if (!r.count) return 'No road of the classes printed in OpenStreetMap here';
   const length = (km) => (state.units === 'imperial' ? `${(km / 1.609344).toFixed(1)} mi` : `${km.toFixed(1)} km`);
   return Object.entries(core.ROAD_CLASSES).filter(([cls]) => r.km[cls])
-    .map(([cls, c]) => `${cls} ${length(r.km[cls])}, ${c.widthMm} mm wide, ${c.liftMm} mm up`).join('; ');
+    .map(([cls, c]) => `${cls} ${length(r.km[cls])}, ${c.widthMm} mm wide, ${levelText(set.roadMm[cls]).toLowerCase()}`).join('; ');
 }
 
 function waterText(m) {
-  const { km2, riverKm } = m.water;
-  if (km2 < 1e-9 && riverKm < 0.05) return 'No lake or river in OpenStreetMap here, or none big enough to show';
-  const area = state.units === 'imperial' ? `${(km2 / 2.589988).toFixed(2)} sq mi` : `${km2.toFixed(2)} km²`;
+  const { lakesKm2, wideKm2, riverKm } = m.water, level = m.set.waterMm;
+  const area = (km2) => (state.units === 'imperial' ? `${(km2 / 2.589988).toFixed(2)} sq mi` : `${km2.toFixed(2)} km²`);
   const length = state.units === 'imperial' ? `${(riverKm / 1.609344).toFixed(1)} mi` : `${riverKm.toFixed(1)} km`;
-  return [km2 >= 1e-9 && `${area} of water sunk ${m.set.waterMm} mm under its shore`, riverKm >= 0.05 && `${length} of river cut ${m.set.waterMm} mm deep`]
-    .filter(Boolean).join('; ');
+  const parts = [lakesKm2 >= 1e-9 && `${area(lakesKm2)} of lake ${levelText(level.lakes).toLowerCase()}`,
+    wideKm2 >= 1e-9 && `${area(wideKm2)} of wide river ${levelText(level.wide).toLowerCase()}`,
+    riverKm >= 0.05 && `${length} of narrow river ${levelText(level.narrow).toLowerCase()}`].filter(Boolean);
+  return parts.length ? parts.join('; ') : 'None of the kinds printed in OpenStreetMap here, or none big enough to show';
 }
 
 /** A print's file name; a set of pieces adds its layout, and one piece of it its name. */
@@ -1701,7 +1754,7 @@ $('print-kml').addEventListener('click', () => {
     centre: m.centre,
     set: m.set,
     // a set's label differs piece to piece, so only a print in one piece keeps it
-    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.lowM, highM: m.highM, reliefMm: m.reliefMm, triangles, buildings: m.buildings, roads: m.roads, water: m.water && { km2: m.water.km2, riverKm: m.water.riverKm, readAt: m.water.readAt }, label: m.pieces.length === 1 ? m.pieces[0].label : null },
+    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.lowM, highM: m.highM, reliefMm: m.reliefMm, triangles, buildings: m.buildings, roads: m.roads, water: m.water && { lakesKm2: m.water.lakesKm2, wideKm2: m.water.wideKm2, riverKm: m.water.riverKm, readAt: m.water.readAt }, label: m.pieces.length === 1 ? m.pieces[0].label : null },
     stlFile: stlFileName(m),
   });
   download(printFileName(m, 'kml'), kml, 'application/vnd.google-earth.kml+xml');
@@ -1839,9 +1892,12 @@ $('print-file').addEventListener('change', async () => {
   $('print-buildings').value = set.buildings ? 'osm' : 'none';
   choose('print-default', set.buildingDefaultM, core.formatHeight(set.buildingDefaultM, state.units));
   showBuildingControls();
-  $('print-roads').value = set.roads ? 'osm' : 'none';
+  // a file with every class or kind left out keeps the selects at their defaults
+  $('print-roads').value = core.anyLevel(set.roadMm) ? 'osm' : 'none';
+  if (core.anyLevel(set.roadMm)) for (const [cls, mm] of Object.entries(set.roadMm)) choose(`print-road-${cls}`, mm, levelText(mm));
   showRoadControls();
-  choose('print-water', set.waterMm, set.waterMm ? `Sunk ${set.waterMm} mm` : 'None');
+  $('print-water').value = core.anyLevel(set.waterMm) ? 'osm' : 'none';
+  if (core.anyLevel(set.waterMm)) for (const [kind, mm] of Object.entries(set.waterMm)) choose(`print-water-${kind}`, mm, levelText(mm));
   showWaterControls();
   setPrintCentre(centre);
   status('print', `Opened ${file.name}. Building the same model.`);

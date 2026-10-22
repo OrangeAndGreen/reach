@@ -897,8 +897,8 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ['bearingDeg', 'Top of the model faces (degrees clockwise from north)', set.bearing ?? 0],
     ['buildings', 'Buildings from OpenStreetMap (1 yes, 0 no)', set.buildings ? 1 : 0],
     ['buildingDefaultM', 'Building height where OSM has none (m)', set.buildingDefaultM ?? DEFAULT_BUILDING_M],
-    ['roads', 'Motorway, trunk and primary roads from OpenStreetMap, raised (1 yes, 0 no)', set.roads ? 1 : 0],
-    ['waterMm', 'Lakes and rivers from OpenStreetMap, sunk (mm, 0 for none)', set.waterMm ?? 0],
+    ...Object.keys(ROAD_CLASSES).map((cls) => [`${cls}Mm`, `${cap(cls)} roads from OpenStreetMap (mm up, negative sunk, 0 for none)`, set.roadMm?.[cls] ?? 0]),
+    ...Object.entries(WATER_KEYS).map(([kind, k]) => [k, `${WATER_KINDS[kind]} from OpenStreetMap (mm up, negative sunk, 0 for none)`, set.waterMm?.[kind] ?? 0]),
     ['piecesAcross', 'Pieces across (each one model width)', cols],
     ['piecesDown', 'Pieces down', rows],
   ];
@@ -949,14 +949,15 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     if (model.roads) {
       const r = model.roads;
       derived.push(
-        ...Object.keys(ROAD_CLASSES).map((cls) => [`${cls}Km`, `${cls[0].toUpperCase()}${cls.slice(1)} roads printed (km)`, +(r.km[cls] || 0).toFixed(1)]),
+        ...Object.keys(ROAD_CLASSES).map((cls) => [`${cls}Km`, `${cap(cls)} roads printed (km)`, +(r.km[cls] || 0).toFixed(1)]),
         ['roadSource', 'Road data', `OpenStreetMap contributors (ODbL), read ${r.readAt}`],
       );
     }
     if (model.water) {
       derived.push(
-        ['waterKm2', 'Lakes and rivers sunk (km²)', +model.water.km2.toFixed(2)],
-        ['riverKm', 'Narrow rivers cut as channels (km)', +(model.water.riverKm || 0).toFixed(1)],
+        ['lakesKm2', 'Lakes printed (km²)', +(model.water.lakesKm2 || 0).toFixed(2)],
+        ['wideRiversKm2', 'Wide rivers printed (km²)', +(model.water.wideKm2 || 0).toFixed(2)],
+        ['riverKm', 'Narrow rivers printed (km)', +(model.water.riverKm || 0).toFixed(1)],
         ['waterSource', 'Water data', `OpenStreetMap contributors (ODbL), read ${model.water.readAt}`],
       );
     }
@@ -1006,6 +1007,9 @@ ${piecePlacemarks}  <Placemark><name>${escapeXml(centre.name)}</name><Point><coo
 }
 
 export const PRINT_FORMAT = 'reach-print-1';
+/** Each kind of water's key in a print's KML. */
+const WATER_KEYS = { lakes: 'lakesMm', wide: 'wideRiversMm', narrow: 'narrowRiversMm' };
+const cap = (w) => `${w[0].toUpperCase()}${w.slice(1)}`;
 
 const shapeName = (v) => {
   if (!PRINT_SHAPES.includes(v)) throw new Error(`the file's shape "${v}" is not one Reach prints`);
@@ -1061,10 +1065,12 @@ export function parsePrintKml(text) {
       // files from before buildings have none
       buildings: values.buildings === '1',
       buildingDefaultM: values.buildingDefaultM == null ? DEFAULT_BUILDING_M : num('buildingDefaultM', 1, 100),
-      // files from before roads have none
-      roads: values.roads === '1',
-      // files from before lakes and rivers have none
-      waterMm: values.waterMm == null ? 0 : num('waterMm', 0, 10),
+      // files from before roads have none, and from before a level for each class have them raised as they were
+      roadMm: Object.fromEntries(Object.keys(ROAD_CLASSES).map((cls) => [cls,
+        values[`${cls}Mm`] != null ? num(`${cls}Mm`, -10, 10) : values.roads === '1' ? ROAD_LEVELS[cls] : 0])),
+      // files from before lakes and rivers have none, and from before a level for each kind have them all sunk one depth
+      waterMm: Object.fromEntries(Object.entries(WATER_KEYS).map(([kind, k]) => [kind,
+        values[k] != null ? num(k, -10, 10) : values.waterMm != null ? -num('waterMm', 0, 10) : 0])),
       // files from before pieces are one piece
       cols: values.piecesAcross == null ? 1 : Math.round(num('piecesAcross', 1, PIECES_MAX)),
       rows: values.piecesDown == null ? 1 : Math.round(num('piecesDown', 1, PIECES_MAX)),
@@ -2294,10 +2300,11 @@ export function buildingTriangles(buildings, zMm, n, { widthMm, toMm, mmPerMetre
 // ---------- roads ----------
 
 /**
- * The road classes printed, biggest first, each with its width and lift on the
- * model. A 30 m motorway is 0.36 mm across at 10 km on 120 mm, under the
- * nozzle, so widths are set on the model rather than the ground; widthM is a
- * real carriageway, which takes over on prints small enough for it to be wider.
+ * The road classes printed, biggest first, each with its width and its level
+ * by default (mm on the model, up). A 30 m motorway is 0.36 mm across at 10
+ * km on 120 mm, under the nozzle, so widths are set on the model rather than
+ * the ground; widthM is a real carriageway, which takes over on prints small
+ * enough for it to be wider.
  */
 export const ROAD_CLASSES = {
   motorway: { widthMm: 1.6, liftMm: 1.2, widthM: 25 },
@@ -2308,6 +2315,21 @@ export const ROAD_CLASSES = {
 export const ROADS_MAX_KM = 50;
 /** A road's top follows the ground averaged over this far either way along it (mm on the model), so it reads as graded. */
 export const ROAD_SMOOTH_MM = 1.5;
+/**
+ * The levels a road class or kind of water can print at, in mm on the model:
+ * up for raised, down (negative) for sunk, 0 for left out.
+ */
+export const LEVELS_MM = [0, 0.4, 0.6, 0.8, 1.2, 1.6, 2, -0.4, -0.6, -0.8, -1.2, -1.6, -2];
+/** Each road class's level by default (raised), and no roads at all. */
+export const ROAD_LEVELS = Object.fromEntries(Object.entries(ROAD_CLASSES).map(([cls, c]) => [cls, c.liftMm]));
+export const NO_ROADS = Object.fromEntries(Object.keys(ROAD_CLASSES).map((cls) => [cls, 0]));
+/** The kinds of water printed, biggest first: areas of still water, rivers mapped as areas, and rivers mapped only as lines. */
+export const WATER_KINDS = { lakes: 'Lakes', wide: 'Wide rivers', narrow: 'Narrow rivers' };
+/** Each kind of water's level by default (sunk), and no water at all. */
+export const WATER_LEVELS = { lakes: -0.6, wide: -0.6, narrow: -0.6 };
+export const NO_WATER = { lakes: 0, wide: 0, narrow: 0 };
+/** True when any class or kind of a set of levels prints. */
+export const anyLevel = (levels) => Object.values(levels || {}).some((v) => v !== 0);
 
 /** The Overpass query for every motorway, trunk and primary road in a lon/lat box, or in any of a list of them, with its line. */
 export function overpassRoadsQuery(b) {
@@ -2405,13 +2427,14 @@ export function roadLines(osm, bounds, widthMm, { frame = null, pieces = null } 
 /**
  * Each road as its own closed solid, as STL triangles (three points each) to
  * add to the terrain's: a ribbon its class's width, whose top is the ground
- * along it, averaged over ROAD_SMOOTH_MM either way, plus its class's lift,
- * and whose floor sits just under the lowest terrain beneath it, so nothing
- * floats. The top stays at least 0.2 mm over the terrain under it, so a road
- * in a cutting still shows. zMm is the terrain in mm (row 0 north); mmPerMetre
- * is model mm per metre of ground across (both from printHeights).
+ * along it, averaged over ROAD_SMOOTH_MM either way, plus its class's level
+ * in levels, and whose floor sits just under the lowest terrain beneath it, so
+ * nothing floats. The top stays at least 0.2 mm over the terrain under it, so
+ * a road in a cutting still shows. Classes whose level isn't up are left to
+ * carveRoads. zMm is the terrain in mm (row 0 north); mmPerMetre is model mm
+ * per metre of ground across (both from printHeights).
  */
-export function roadTriangles(roads, zMm, n, { widthMm, mmPerMetre }) {
+export function roadTriangles(roads, zMm, n, { widthMm, mmPerMetre, levels = ROAD_LEVELS }) {
   const step = widthMm / (n - 1);
   // the lowest and highest corner of the grid cell under a point: the terrain over the cell lies between
   const cellSpan = (x, y) => {
@@ -2422,27 +2445,16 @@ export function roadTriangles(roads, zMm, n, { widthMm, mmPerMetre }) {
   const dir = (a, b) => { const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1; return [dx / l, dy / l]; };
   const tris = [];
   for (const { cls, line } of roads) {
-    const { widthMm: classMm, liftMm, widthM } = ROAD_CLASSES[cls];
+    const liftMm = levels[cls] || 0;
+    if (liftMm <= 0) continue;
+    const { widthMm: classMm, widthM } = ROAD_CLASSES[cls];
     const half = Math.max(classMm, widthM * mmPerMetre) / 2;
-    // points at most a grid step apart, keeping the line's own corners
-    const pts = [line[0]];
-    for (let k = 1; k < line.length; k++) {
-      const [ax, ay] = line[k - 1], [bx, by] = line[k];
-      const parts = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / step));
-      for (let s = 1; s <= parts; s++) pts.push([ax + ((bx - ax) * s) / parts, ay + ((by - ay) * s) / parts]);
-    }
+    const pts = roadPoints(line, step);
     const m = pts.length;
     if (m < 2) continue;
-    const along = [0];
-    for (let k = 1; k < m; k++) along.push(along[k - 1] + Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]));
-    const ground = pts.map(([x, y]) => gridAt(zMm, n, widthMm, x, y));
+    const smooth = roadGround(pts, zMm, n, widthMm);
     const sections = [];
-    let lo = 0, hi = 0, sum = 0;
     for (let k = 0; k < m; k++) {
-      // the ground averaged over ROAD_SMOOTH_MM either way, as a sliding window
-      while (hi < m && along[hi] <= along[k] + ROAD_SMOOTH_MM) sum += ground[hi++];
-      while (along[lo] < along[k] - ROAD_SMOOTH_MM) sum -= ground[lo++];
-      const smooth = sum / (hi - lo);
       // the point's left is square to the mean of the directions either side, pushed out at a bend so the sides stay parallel
       const d0 = dir(pts[Math.max(0, k - 1)], pts[k === 0 ? 1 : k]), d1 = dir(pts[k === m - 1 ? m - 2 : k], pts[Math.min(m - 1, k + 1)]);
       let tx = d0[0] + d1[0], ty = d0[1] + d1[1];
@@ -2454,7 +2466,7 @@ export function roadTriangles(roads, zMm, n, { widthMm, mmPerMetre }) {
       const L = [x + ox, y + oy], R = [x - ox, y - oy];
       const spans = [cellSpan(x, y), cellSpan(...L), cellSpan(...R)];
       const bottom = Math.max(0, Math.min(...spans.map((s) => s[0])) - 0.2);
-      const top = Math.max(smooth + liftMm, Math.max(...spans.map((s) => s[1])) + 0.2, bottom + 0.4);
+      const top = Math.max(smooth[k] + liftMm, Math.max(...spans.map((s) => s[1])) + 0.2, bottom + 0.4);
       // counter-clockwise looking back along the road: top left, top right, bottom right, bottom left
       sections.push([[L[0], L[1], top], [R[0], R[1], top], [R[0], R[1], bottom], [L[0], L[1], bottom]]);
     }
@@ -2470,6 +2482,106 @@ export function roadTriangles(roads, zMm, n, { widthMm, mmPerMetre }) {
     tris.push(s1[0], s1[1], s1[2], s1[0], s1[2], s1[3]); // the end, facing on
   }
   return tris;
+}
+
+/** A road line's points at most step apart, keeping the line's own corners. */
+function roadPoints(line, step) {
+  const pts = [line[0]];
+  for (let k = 1; k < line.length; k++) {
+    const [ax, ay] = line[k - 1], [bx, by] = line[k];
+    const parts = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / step));
+    for (let s = 1; s <= parts; s++) pts.push([ax + ((bx - ax) * s) / parts, ay + ((by - ay) * s) / parts]);
+  }
+  return pts;
+}
+
+/** The ground under each of a road's points, averaged over ROAD_SMOOTH_MM either way along it, as a sliding window. */
+function roadGround(pts, zMm, n, widthMm) {
+  const m = pts.length;
+  const along = [0];
+  for (let k = 1; k < m; k++) along.push(along[k - 1] + Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]));
+  const ground = pts.map(([x, y]) => gridAt(zMm, n, widthMm, x, y));
+  const out = [];
+  let lo = 0, hi = 0, sum = 0;
+  for (let k = 0; k < m; k++) {
+    while (hi < m && along[hi] <= along[k] + ROAD_SMOOTH_MM) sum += ground[hi++];
+    while (along[lo] < along[k] - ROAD_SMOOTH_MM) sum -= ground[lo++];
+    out.push(sum / (hi - lo));
+  }
+  return out;
+}
+
+/**
+ * Cuts the roads whose class's level in levels is down into a millimetre grid
+ * (row 0 north) as grooves: the grid points within half the road's width of
+ * its line, and the point nearest it all along, sink by the level under the
+ * ground along the road, averaged over ROAD_SMOOTH_MM either way, so the
+ * groove's floor is graded as a raised road's top is. Points in skip (the
+ * water, which a road crosses on a bridge) and at or under sea level (heights
+ * in metres, at most 0) are left alone, and no point is left with less than
+ * minMm of model under it. Returns { mm, mask }: the new grid and a Uint8Array
+ * with a 1 for each point cut.
+ */
+export function carveRoads(mm, roads, n, { widthMm, mmPerMetre, levels = ROAD_LEVELS, skip = null, heights = null, minMm = 0.6 }) {
+  const step = widthMm / (n - 1);
+  const bed = new Float64Array(n * n).fill(Infinity);
+  for (const { cls, line } of roads) {
+    const depthMm = -(levels[cls] || 0);
+    if (depthMm <= 0) continue;
+    const { widthMm: classMm, widthM } = ROAD_CLASSES[cls];
+    const half = Math.max(classMm, widthM * mmPerMetre) / 2;
+    // half a grid step apart, so the nearest grid point moves at most one step each way between them
+    const pts = roadPoints(line, step / 2);
+    const smooth = roadGround(pts, mm, n, widthMm);
+    stampLine(pts.map(([x, y], k) => ({ x, y, half, z: smooth[k] - depthMm })), n, widthMm, bed);
+  }
+  return setLevels(mm, bed, n, { skip, heights, minMm });
+}
+
+/**
+ * Marks a line of { x, y, half, z } samples (mm on the model, at most half a
+ * grid step apart) into bed, keeping the lowest z at each grid point: the
+ * points within half of each sample, and the grid point nearest the line all
+ * along it, with a diagonal move filled in so what it marks stays 4-connected.
+ * A sample off the model, or without a finite z, breaks the line.
+ */
+function stampLine(samples, n, widthMm, bed) {
+  const step = widthMm / (n - 1);
+  const put = (i, j, z) => {
+    if (i < 0 || i >= n || j < 0 || j >= n) return;
+    const k = j * n + i;
+    if (z < bed[k]) bed[k] = z;
+  };
+  let prev = null;
+  for (const { x, y, half, z } of samples) {
+    if (!Number.isFinite(z) || x < 0 || x > widthMm || y < 0 || y > widthMm) { prev = null; continue; }
+    const gi = x / step, gj = n - 1 - y / step;
+    const ni = Math.round(gi), nj = Math.round(gj);
+    put(ni, nj, z);
+    if (prev && prev[0] !== ni && prev[1] !== nj) put(ni, prev[1], z); // a diagonal move, filled in so the line stays 4-connected
+    prev = [ni, nj];
+    const r = half / step;
+    for (let j = Math.ceil(gj - r); j <= Math.floor(gj + r); j++) {
+      for (let i = Math.ceil(gi - r); i <= Math.floor(gi + r); i++) if (Math.hypot(i - gi, j - gj) <= r) put(i, j, z);
+    }
+  }
+}
+
+/**
+ * A grid with each point marked in bed moved to its level there: sunk to it,
+ * keeping minMm of model under it, or with raise, lifted to it where it is
+ * above the ground, never cut. Points in skip, and at or under sea level in
+ * heights, are left alone. Returns { mm, mask }, mask a Uint8Array with a 1
+ * for each point marked.
+ */
+function setLevels(mm, bed, n, { skip = null, heights = null, minMm = 0.6, raise = false }) {
+  const out = mm.slice(), mask = new Uint8Array(n * n);
+  for (let k = 0; k < n * n; k++) {
+    if (!(bed[k] < Infinity) || skip?.[k] || (heights && !(heights[k] > 0))) continue;
+    out[k] = raise ? Math.max(mm[k], bed[k]) : Math.max(Math.min(mm[k], minMm), Math.min(mm[k], bed[k]));
+    mask[k] = 1;
+  }
+  return { mm: out, mask };
 }
 
 // ---------- lakes and wide rivers ----------
@@ -2488,6 +2600,9 @@ export function overpassWaterQuery(b) {
     .map((tag) => `way["${tag}"](${box});relation["${tag}"]["type"="multipolygon"](${box});`).join('') + `way["waterway"="river"](${box});`);
   return `[out:json][timeout:90];(${parts.join('')});out geom;`;
 }
+
+/** River and canal water mapped as an area: a riverbank, or natural=water tagged as a river, canal or stream. The rest is a lake. */
+export const wideRiver = (tags = {}) => tags.waterway === 'riverbank' || ['river', 'canal', 'stream', 'rapids'].includes(tags.water);
 
 /**
  * A water area's rings from an OSM element, as [lon, lat] points without the
@@ -2514,7 +2629,8 @@ export function waterRings(el) {
 /**
  * An Overpass water reply shared out among the cells it was asked for, as
  * elementsByCell does, but each water area cut to the cell it is kept in, as
- * { type: 'water', id, rings }. One lake can be a great many points (all of
+ * { type: 'water', id, rings, wide }, wide for a river's area rather than a
+ * lake's (wideRiver). One lake can be a great many points (all of
  * Lake Michigan comes back for a print on its shore), and each cell keeps only
  * its own piece of it. A ring cut to a cell still fills even-odd as the whole
  * did within the cell, so the pieces of every cell together are the area.
@@ -2532,6 +2648,7 @@ export function waterByCell(osm, cells, z) {
     }
     const rings = waterRings(el);
     if (!rings.length) continue;
+    const wide = wideRiver(el.tags);
     // by a loop, not lonLatBounds: a big lake's points are too many to spread into Math.min
     const b = { west: Infinity, east: -Infinity, south: Infinity, north: -Infinity };
     for (const ring of rings) {
@@ -2546,7 +2663,7 @@ export function waterByCell(osm, cells, z) {
       const cb = cellBounds(c, z);
       const box = [[cb.west, cb.south], [cb.east, cb.south], [cb.east, cb.north], [cb.west, cb.north]];
       const cut = rings.map((r) => clipToConvex(r, box)).filter(Boolean);
-      if (cut.length) list.push({ type: 'water', id: `${el.type}${el.id}@${c.x}/${c.y}`, rings: cut });
+      if (cut.length) list.push({ type: 'water', id: `${el.type}${el.id}@${c.x}/${c.y}`, rings: cut, wide });
     }
   }
   return out;
@@ -2557,9 +2674,9 @@ export function waterByCell(osm, cells, z) {
  * with a 1 for each point inside a water area of osm (from waterByCell) and
  * above sea level: water at or under it is the sea's, cut flat already.
  * frame places the lon/lat rings on the model. Patches smaller than
- * WATER_MIN_MM2 are left out.
+ * minMm2 are left out.
  */
-export function waterPoints(osm, heights, n, widthMm, frame) {
+export function waterPoints(osm, heights, n, widthMm, frame, minMm2 = WATER_MIN_MM2) {
   const step = widthMm / (n - 1);
   const water = new Uint8Array(n * n);
   for (const el of osm.elements || []) {
@@ -2583,7 +2700,7 @@ export function waterPoints(osm, heights, n, widthMm, frame) {
   }
   for (let k = 0; k < n * n; k++) if (!(heights[k] > 0)) water[k] = 0;
   // Drop the patches too small to show, in 4-connected pieces as the shoreline finds the sea.
-  const minPoints = WATER_MIN_MM2 / (step * step);
+  const minPoints = minMm2 / (step * step);
   const seen = new Uint8Array(n * n);
   for (let start = 0; start < n * n; start++) {
     if (!water[start] || seen[start]) continue;
@@ -2603,11 +2720,27 @@ export function waterPoints(osm, heights, n, widthMm, frame) {
 }
 
 /**
+ * The water on an n x n grid as waterPoints finds it, split into { lakes,
+ * wide }: a Uint8Array each, wide for the points of a river's area (wideRiver)
+ * and lakes for the rest. Where a lake and a river's area overlap, the lake
+ * has it. The patches too small to show are found in the two together, so a
+ * river's short reach into a lake isn't lost for being short.
+ */
+export function waterKinds(osm, heights, n, widthMm, frame) {
+  const all = waterPoints(osm, heights, n, widthMm, frame);
+  const still = waterPoints({ elements: (osm.elements || []).filter((el) => !el.wide) }, heights, n, widthMm, frame, 0);
+  const lakes = new Uint8Array(n * n), wide = new Uint8Array(n * n);
+  for (let k = 0; k < n * n; k++) if (all[k]) (still[k] ? lakes : wide)[k] = 1;
+  return { lakes, wide };
+}
+
+/**
  * Sinks the water (from waterPoints) into a millimetre grid: each water point
  * to depthMm under the lowest water within WATER_REACH grid steps of it, so
  * a lake is one flat level under its shore and a river steps down with its
- * valley, never leaving less than minMm of model under it. Still a height
- * grid, so the STL stays closed.
+ * valley, never leaving less than minMm of model under it. A negative depthMm
+ * raises it that far over the same level instead, as a flat top, lifting
+ * only what is under it. Still a height grid, so the STL stays closed.
  */
 export function carveWater(mm, water, n, depthMm, minMm = 0.6) {
   const r = WATER_REACH;
@@ -2621,7 +2754,7 @@ export function carveWater(mm, water, n, depthMm, minMm = 0.6) {
         if (water[q] && mm[q] < low) low = mm[q];
       }
     }
-    return Math.max(Math.min(z, minMm), Math.min(z, low - depthMm));
+    return depthMm < 0 ? Math.max(z, low - depthMm) : Math.max(Math.min(z, minMm), Math.min(z, low - depthMm));
   });
 }
 
@@ -2662,9 +2795,11 @@ export function riverLines(osm, frame) {
  * river drawn in several ways), the lowest level reaching it goes on down
  * each of them. Points in skip (the lakes and wide rivers, sunk on their own)
  * and at or under sea level (heights in metres, at most 0) are left alone,
- * and no point is left with less than minMm of model under it. Returns
- * { mm, mask, km }: the new grid, a Uint8Array with a 1 for each point cut,
- * and the length of river on the grid in km.
+ * and no point is left with less than minMm of model under it. A negative
+ * depthMm raises the river that far over the same level instead, as a ridge,
+ * lifting only what is under it. Returns { mm, mask, km }: the new grid, a
+ * Uint8Array with a 1 for each point cut, and the length of river on the grid
+ * in km.
  */
 export function carveRivers(mm, rivers, n, { widthMm, mmPerMetre, depthMm, skip = null, heights = null, minMm = 0.6 }) {
   const step = widthMm / (n - 1);
@@ -2704,33 +2839,8 @@ export function carveRivers(mm, rivers, n, { widthMm, mmPerMetre, depthMm, skip 
     }
   }
   const bed = new Float64Array(n * n).fill(Infinity);
-  const put = (i, j, z) => {
-    if (i < 0 || i >= n || j < 0 || j >= n) return;
-    const k = j * n + i;
-    if (z < bed[k]) bed[k] = z;
-  };
-  for (const line of lines) {
-    let prev = null;
-    for (const p of line) {
-      if (!Number.isFinite(p.run) || !inside(p.x, p.y)) { prev = null; continue; }
-      const z = p.run - depthMm, gi = p.x / step, gj = n - 1 - p.y / step;
-      const ni = Math.round(gi), nj = Math.round(gj);
-      put(ni, nj, z);
-      if (prev && prev[0] !== ni && prev[1] !== nj) put(ni, prev[1], z); // a diagonal move, filled in so the channel stays 4-connected
-      prev = [ni, nj];
-      const r = p.half / step;
-      for (let j = Math.ceil(gj - r); j <= Math.floor(gj + r); j++) {
-        for (let i = Math.ceil(gi - r); i <= Math.floor(gi + r); i++) if (Math.hypot(i - gi, j - gj) <= r) put(i, j, z);
-      }
-    }
-  }
-  const out = mm.slice(), mask = new Uint8Array(n * n);
-  for (let k = 0; k < n * n; k++) {
-    if (!(bed[k] < Infinity) || skip?.[k] || (heights && !(heights[k] > 0))) continue;
-    out[k] = Math.max(Math.min(mm[k], minMm), Math.min(mm[k], bed[k]));
-    mask[k] = 1;
-  }
-  return { mm: out, mask, km: lengthMm / mmPerMetre / 1000 };
+  for (const line of lines) stampLine(line.map((p) => ({ x: p.x, y: p.y, half: p.half, z: p.run - depthMm })), n, widthMm, bed);
+  return { ...setLevels(mm, bed, n, { skip, heights, minMm, raise: depthMm < 0 }), km: lengthMm / mmPerMetre / 1000 };
 }
 
 // ---------- zip ----------
