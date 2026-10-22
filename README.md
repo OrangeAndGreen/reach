@@ -18,7 +18,7 @@ Three tools on one map:
   Central Park. On the map, drag the centre dot to move it or the outline to
   resize it: the shape grows about its centre, a rectangle's side moves alone,
   and sizes snap to 10 m, 100 m or 1 km as they grow. On prints of 2 km or less across it can raise the buildings
-  from OpenStreetMap too, and on prints of 50 km or less the main roads, raised, and the lakes and wide rivers, sunk 0.6 or 1.2 mm. Choose the model width (the shape's width across), the detail, a height stretch and
+  from OpenStreetMap too, and on prints of 50 km or less the main roads, raised, and the lakes and rivers, sunk 0.6 or 1.2 mm. Choose the model width (the shape's width across), the detail, a height stretch and
   the base thickness, and whether the sea floor comes too (down to 50 m, 200 m,
   1,000 m or all the way, with its own depth stretch), and whether to mark the
   shoreline with a groove or a ridge (0.4 or 0.8 mm) to paint or just to see the coast by. It can also cut a label 0.6 mm up into the underside, mirrored so it reads when you turn the print over: the centre's coordinates, the ground covered and the height stretch (and the depth stretch, when the sea floor has its own), under an arrow pointing north, with up to three lines of your own text between the arrow and them, or your text alone. The corners are rounded, 5 mm by default (or 10 mm, or square), so a wide slab is slower to lift off the bed: a square's ground is squeezed into the curve, another shape's is cut off along it, and a star rounds only its points. A preview you can turn shows the model, beside its real
@@ -153,8 +153,20 @@ ES modules, which is why it needs the little server rather than file://.
   elevation data, so it prints as one level under its shore, and the window reaches past the
   blur at the shore that would lift the edge. A river steps down its valley.
   The water is carved before buildings and roads are stood on the terrain, so a
-  bridge reaches down into the channel rather than float. Rivers mapped only as
-  lines aren't fetched yet: most are narrower than a grid step.
+  bridge reaches down into the channel rather than float.
+- **Narrow rivers.** Rivers mapped only as lines (`waterway=river`, not
+  streams, canals or culverts) are cut as channels: the grid points within
+  half the river's width of its line (OSM's `width`, or 20 m, and never under
+  0.8 mm on the model), and the point nearest the line all along it, so the
+  channel never breaks on a diagonal. The bed is the sinking depth under the
+  lowest ground the river has passed over since its source, read along the
+  line in the way OSM draws it, downstream. So a channel only ever steps down,
+  cutting through the bumps where the elevation data and the mapped line
+  disagree. Where rivers share a point (a tributary joining, a river drawn in
+  several ways) the lowest level reaching it goes on down each. Lines inside a
+  lake or river area are left to it. A 20 km square around Bartlett, NH cuts
+  76 miles of river channel. A river's level starts
+  again at each piece's edge, so across a seam it can step up a little.
 - **Buildings already in the elevation data.** Mostly they aren't: at the
   print zooms the tiles are bare earth under the buildings OSM maps in
   Manhattan, Sunny Isles Beach, Midtown Miami and Dubai Marina. The tall

@@ -104,3 +104,74 @@ test('a print KML keeps the water setting and the area sunk', () => {
   assert.match(kml, /<Data name="waterKm2">.*<value>12.35<\/value>/);
   assert.deepEqual(core.parsePrintKml(kml).set, set);
 });
+
+// Narrow rivers, cut as channels.
+
+test('the water query asks for river lines too', () => {
+  const q = core.overpassWaterQuery({ south: 41.8, west: -87.7, north: 41.9, east: -87.6 });
+  assert.ok(q.includes('way["waterway"="river"](41.800000,-87.700000,41.900000,-87.600000)'));
+});
+
+test('riverLine keeps a river way in its own order with its width, and skips culverts and streams', () => {
+  assert.deepEqual(core.riverLine(way(1, [[0, 0], [1, 0]], { waterway: 'river', width: '45' })), [[0, 0, 45], [1, 0, 45]]);
+  assert.deepEqual(core.riverLine(way(2, [[0, 0], [1, 0]], { waterway: 'river' })), [[0, 0, core.RIVER_WIDTH_M], [1, 0, core.RIVER_WIDTH_M]]);
+  assert.equal(core.riverLine(way(3, [[0, 0], [1, 0]], { waterway: 'river', tunnel: 'culvert' })), null);
+  assert.equal(core.riverLine(way(4, [[0, 0], [1, 0]], { waterway: 'stream' })), null);
+});
+
+test('waterByCell keeps a river whole in each cell it crosses, once when merged', () => {
+  const z = 13;
+  const cells = [{ x: 2100, y: 3040 }, { x: 2101, y: 3040 }];
+  const a = core.cellBounds(cells[0], z), b = core.cellBounds(cells[1], z);
+  const mid = (a.south + a.north) / 2;
+  const river = way(9, [[a.west + 1e-4, mid], [b.east - 1e-4, mid]], { waterway: 'river' });
+  const parts = core.waterByCell({ elements: [river] }, cells, z);
+  for (const c of cells) assert.deepEqual(parts.get(`${c.x}/${c.y}`).map((e) => e.line.length), [2]);
+  const merged = core.mergeElements([...parts.values()]);
+  assert.equal(merged.elements.length, 1);
+  assert.deepEqual(core.riverLines(merged, flat), [[[a.west + 1e-4, mid, core.RIVER_WIDTH_M], [b.east - 1e-4, mid, core.RIVER_WIDTH_M]]]);
+});
+
+test('carveRivers cuts a channel that never climbs downstream, and leaves the banks', () => {
+  const n = 21, widthMm = 20; // a point every 1 mm
+  const at = (x, y) => (n - 1 - y) * n + x;
+  // a valley falling west to east, with a bump in the data halfway along
+  const mm = Array.from({ length: n * n }, (_, k) => 10 - (k % n) * 0.2);
+  for (let y = 0; y < n; y++) mm[at(10, y)] += 3;
+  const river = [[0, 10, 0], [20, 10, 0]]; // no width: the narrowest cut
+  const { mm: out, mask, km } = core.carveRivers(mm, [river], n, { widthMm, mmPerMetre: 1, depthMm: 0.6 });
+  for (let x = 1; x <= 20; x++) assert.ok(out[at(x, 10)] <= out[at(x - 1, 10)] + 1e-9, `climbs at ${x}`);
+  near(out[at(0, 10)], 9.4, 1e-9);
+  near(out[at(10, 10)], 10 - 9 * 0.2 - 0.6, 1e-9, 'the bump is cut through at the level before it');
+  assert.equal(mask[at(5, 10)], 1);
+  assert.equal(mask[at(5, 12)], 0, 'the bank');
+  assert.equal(out[at(5, 12)], mm[at(5, 12)]);
+  near(km, 0.02, 1e-9);
+});
+
+test('carveRivers keeps a diagonal channel 4-connected and carries a level across a join', () => {
+  const n = 21, widthMm = 20;
+  const at = (x, y) => (n - 1 - y) * n + x;
+  const mm = new Array(n * n).fill(10);
+  let { mask } = core.carveRivers(mm, [[[0, 0, 0], [20, 20, 0]]], n, { widthMm, mmPerMetre: 0.01, depthMm: 0.6 });
+  for (let x = 0; x < 20; x++) assert.ok(mask[at(x + 1, x)] || mask[at(x, x + 1)], `a step at ${x}`);
+  // a tributary drawn first meets a river that has already come low; below the join both follow the lower level
+  const low = mm.slice();
+  for (let x = 0; x <= 10; x++) low[at(x, 4)] = 5;
+  const main = [[0, 4, 0], [10, 4, 0], [10, 10, 0]], below = [[10, 10, 0], [10, 18, 0]], trib = [[18, 10, 0], [10, 10, 0]];
+  const out = core.carveRivers(low, [trib, below, main], n, { widthMm, mmPerMetre: 0.01, depthMm: 0.6 }).mm;
+  near(out[at(10, 15)], 4.4, 1e-9);
+  near(out[at(15, 10)], 9.4, 1e-9, 'the tributary above the join keeps its own level');
+});
+
+test('carveRivers leaves the lakes, the sea and the floor alone', () => {
+  const n = 5, widthMm = 4;
+  const mm = new Array(n * n).fill(1);
+  const skip = new Uint8Array(n * n), heights = new Array(n * n).fill(50);
+  skip[2 * n + 1] = 1;
+  heights[2 * n + 3] = 0;
+  const { mm: out, mask } = core.carveRivers(mm, [[[0, 2, 0], [4, 2, 0]]], n, { widthMm, mmPerMetre: 0.01, depthMm: 1.2, skip, heights });
+  assert.deepEqual([...mask.slice(2 * n, 3 * n)], [1, 0, 1, 0, 1]);
+  near(out[2 * n], 0.6, 1e-9);
+  assert.equal(out[2 * n + 1], 1);
+});
