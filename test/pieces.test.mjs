@@ -92,7 +92,7 @@ test("a piece's label says where it goes, before the rest", () => {
 });
 
 test('a print KML keeps its pieces and outlines the whole set', () => {
-  const set = { sideKm: 40, widthMm: 250, cells: 626, pitchMm: 0.4, exaggeration: 2, baseMm: 3, seaFloorM: 0, depthStretch: 2, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 2, rows: 1 };
+  const set = { sideKm: 40, widthMm: 250, cells: 626, pitchMm: 0.4, exaggeration: 2, baseMm: 3, seaFloorM: 0, depthStretch: 2, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 2, rows: 1, tracks: [] };
   const kml = core.printKml({ centre, set });
   assert.match(kml, /<Data name="mapScale">.*<value>1:80000<\/value>/);
   assert.match(kml, /2 × 1 pieces of 250 mm/);
@@ -158,7 +158,7 @@ test('a resampled grid keeps a plane, its corners, and the side it shares', () =
 
 test('a KML of pieces outlines each one, and keeps the centre to the last digit', () => {
   const exact = { name: 'Somewhere', lat: 44.27063418529731, lon: -71.30331937210984 };
-  const set = { sideKm: 30, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 2, baseMm: 3, cols: 3, rows: 2 };
+  const set = { sideKm: 30, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 2, baseMm: 3, cols: 3, rows: 2, tracks: [] };
   const kml = core.printKml({ centre: exact, set });
   const names = [...kml.matchAll(/<Placemark><name>(Piece [A-C]\d)<\/name>/g)].map((m) => m[1]);
   assert.deepEqual(names, ['Piece A1', 'Piece A2', 'Piece A3', 'Piece B1', 'Piece B2', 'Piece B3']);

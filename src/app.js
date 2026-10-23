@@ -40,6 +40,17 @@ function saveSettings() {
   } catch { /* storage blocked: settings just aren't remembered */ }
 }
 
+// Imported tracks are kept apart, as they can run to thousands of points.
+const TRACKS = 'reach.tracks';
+function loadTracks() {
+  try { return JSON.parse(localStorage.getItem(TRACKS)) || []; } catch { return []; }
+}
+function saveTracks() {
+  try {
+    localStorage.setItem(TRACKS, JSON.stringify(state.tracks.map(({ name, lines, levelMm }) => ({ name, lines, levelMm }))));
+  } catch { /* storage blocked or full: the tracks just aren't remembered */ }
+}
+
 const saved = loadSettings();
 const state = {
   units: saved.units || 'metric',
@@ -57,6 +68,8 @@ const state = {
   printTab: saved.printTab || 'shape',
   model: null,
   busy: false,
+  // { id, name, lines: [[lon, lat], ...] each, levelMm }, the id only for the list
+  tracks: loadTracks().map((t, id) => ({ ...t, id })),
 };
 if (saved.limits) $('limits').value = saved.limits;
 if (saved.detail) $('detail').value = saved.detail;
@@ -765,6 +778,7 @@ function printSettings() {
     buildingDefaultM: Number($('print-default').value),
     roadMm: $('print-roads').value === 'osm' && Number($('print-side').value) <= core.ROADS_MAX_KM ? levelsOf('road', core.ROAD_CLASSES) : core.NO_ROADS,
     waterMm: $('print-water').value === 'osm' && Number($('print-side').value) <= core.WATER_MAX_KM ? levelsOf('water', core.WATER_KINDS) : core.NO_WATER,
+    tracks: state.tracks.filter((t) => t.levelMm).map(({ name, lines, levelMm }) => ({ name, lines, levelMm })),
     cols,
     rows,
   };
@@ -831,6 +845,12 @@ function drawPrintSquare(fit) {
     for (let c = 1; c < set.cols; c++) lines.push([at(c * w, plan.bottomMm), at(c * w, plan.bottomMm + plan.downMm)]);
     for (let r = 1; r < set.rows; r++) lines.push([at(0, plan.bottomMm + r * w), at(plan.acrossMm, plan.bottomMm + r * w)]);
     L.polyline(lines, { color: cssVar('--accent'), weight: 1.5, dashArray: '5 5', interactive: false }).addTo(printLayer);
+  }
+  // Every imported track, printed or left out, so it's plain where each runs against the print.
+  for (const t of state.tracks) {
+    const lines = t.lines.map((line) => line.map(([lon, lat]) => [lat, lon]));
+    L.polyline(lines, { color: '#ffffff', weight: 5, opacity: 0.8, interactive: false }).addTo(printLayer);
+    L.polyline(lines, { color: core.TRACK_COLOUR, weight: 2.5, dashArray: t.levelMm ? null : '4 5', interactive: false }).addTo(printLayer);
   }
   L.circleMarker([centre.lat, centre.lon], { radius: 5, color: '#fff', weight: 2, fillColor: cssVar('--accent'), fillOpacity: 1, interactive: false })
     .addTo(printLayer);
@@ -1195,6 +1215,13 @@ async function buildModel() {
         scaled.mm = sunk.mm;
         roadMask = sunk.mask;
       }
+      let trackWays = null, trackMask = null;
+      if (set.tracks.length) {
+        trackWays = core.trackLines(set.tracks, { frame: piece.frame, widthMm: set.widthMm, pieces: outline?.pieces });
+        const sunk = core.carveRoads(scaled.mm, trackWays, n, { ...pieceSet, ...scaled, skip: water?.areas, heights });
+        scaled.mm = sunk.mm;
+        trackMask = sunk.mask;
+      }
       const extra = placed ? core.buildingTriangles(placed.buildings, scaled.mm, n, { ...pieceSet, ...scaled }) : [];
       if (buildings) buildings.triangles = extra.length / 3;
       let roads = null;
@@ -1204,6 +1231,15 @@ async function buildModel() {
         const km = {};
         for (const { cls, line } of ways) km[cls] = (km[cls] || 0) + core.lineLength(line) / scaled.mmPerMetre / 1000;
         roads = { count: ways.length, km, triangles: roadTris.length / 3, mask: roadMask, readAt: roadReply.readAt };
+      }
+      // written last, after the roads, so the preview finds them at the end
+      let tracks = null;
+      if (trackWays) {
+        const trackTris = core.roadTriangles(trackWays, scaled.mm, n, { ...pieceSet, ...scaled });
+        for (const p of trackTris) extra.push(p);
+        const km = set.tracks.map(() => 0);
+        for (const { track, line } of trackWays) km[track] += core.lineLength(line) / scaled.mmPerMetre / 1000;
+        tracks = { km, triangles: trackTris.length / 3, mask: trackMask };
       }
       const { lines, wrap } = core.labelLines(centre, set, split ? piece.name : null);
       const label = lines.length ? core.bottomLabel(lines, scaled.mm, n, set.widthMm, outline, set.bearing, wrap) : null;
@@ -1216,7 +1252,7 @@ async function buildModel() {
       } else {
         stl = core.terrainStl(scaled.mm, n, set.widthMm, extra, cutLabel, set.cornerMm, split ? piece.corners : null);
       }
-      return { name: piece.name, col: piece.col, row: piece.row, corners: piece.corners, stl, top, outline, scaled, set: pieceSet, buildings, roads, water, shore, label };
+      return { name: piece.name, col: piece.col, row: piece.row, corners: piece.corners, stl, top, outline, scaled, set: pieceSet, buildings, roads, water, tracks, shore, label };
     });
     state.model = {
       set, centre, plan, pieces, zoom: z, pixel, seaZoom, seaPixel: seaZoom == null ? null : core.pixelMetres(centre.lat, seaZoom),
@@ -1224,6 +1260,7 @@ async function buildModel() {
       buildings: sumBuildings(pieces),
       roads: sumRoads(pieces),
       water: sumWater(pieces),
+      tracks: sumTracks(pieces),
     };
     showPieceChoice();
     showModel();
@@ -1282,6 +1319,13 @@ function sumWater(pieces) {
   if (!all.length) return null;
   const sum = (k) => all.reduce((s, w) => s + w[k], 0);
   return { lakesKm2: sum('lakesKm2'), wideKm2: sum('wideKm2'), riverKm: sum('riverKm'), readAt: all[0].readAt };
+}
+
+/** The length of each track printed, over every piece together (km), or null without tracks. */
+function sumTracks(pieces) {
+  const all = pieces.map((p) => p.tracks).filter(Boolean);
+  if (!all.length) return null;
+  return { km: all[0].km.map((_, k) => all.reduce((s, t) => s + t.km[k], 0)) };
 }
 
 /** The preview's piece list: the whole set, then each piece. Hidden for a print in one piece. */
@@ -1472,6 +1516,66 @@ function showWaterControls() {
 $('print-water').addEventListener('change', () => { showWaterControls(); buildModel(); });
 showWaterControls();
 
+// Tracks of your own, from KML files: each in the list with its level and a button to take it out.
+let nextTrack = state.tracks.length;
+function renderTracks() {
+  const ul = $('print-tracks');
+  ul.innerHTML = '';
+  ul.hidden = !state.tracks.length;
+  for (const t of state.tracks) {
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="swatch" style="background:${core.TRACK_COLOUR}"></span>
+      <span class="name" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</span><span class="coords">${trackLength(core.trackKm(t))}</span>
+      <select aria-label="Level of ${escapeHtml(t.name)}"></select>
+      <button type="button" aria-label="Remove ${escapeHtml(t.name)}" title="Remove from the model">×</button>`;
+    const level = li.querySelector('select');
+    level.replaceChildren(...core.LEVELS_MM.map((mm) => new Option(levelText(mm), String(mm))));
+    if (!core.LEVELS_MM.includes(t.levelMm)) level.append(new Option(levelText(t.levelMm), String(t.levelMm)));
+    level.value = String(t.levelMm);
+    level.addEventListener('change', () => { t.levelMm = Number(level.value); tracksChanged(); });
+    li.querySelector('button').addEventListener('click', () => {
+      state.tracks = state.tracks.filter((x) => x !== t);
+      tracksChanged();
+    });
+    ul.append(li);
+  }
+  const printed = state.tracks.filter((t) => t.levelMm);
+  $('print-tracks-hint').textContent = !state.tracks.length
+    ? 'Lines from a KML file (a hike, a ride, a route drawn in Google Earth) printed on the ground, each raised or sunk by its own amount.'
+    : !printed.length ? 'Every track is left out, so the print has none. Left out, a track is dashed on the map.'
+    : `Each track is ${core.TRACK_WIDTH_MM} mm wide, at its level over or under the ground along it, smoothed so it reads as graded. `
+      + 'A raised track is its own solid standing on the ground; a sunk one is a groove, which leaves the water it crosses alone. The heights in the file are not used.';
+}
+function trackLength(km) {
+  return state.units === 'imperial' ? `${(km / 1.609344).toFixed(1)} mi` : `${km.toFixed(1)} km`;
+}
+function tracksChanged() {
+  saveTracks();
+  renderTracks();
+  drawPrintSquare(false);
+  buildModel();
+}
+$('print-track-add').addEventListener('click', () => $('print-track-file').click());
+$('print-track-file').addEventListener('change', async () => {
+  const files = [...$('print-track-file').files];
+  $('print-track-file').value = '';
+  const added = [], empty = [];
+  for (const file of files) {
+    let found = [];
+    try {
+      found = core.parseTrackKml(await file.text(), file.name.replace(/\.kml$/i, ''));
+    } catch { /* unreadable: counts as no lines */ }
+    if (!found.length) empty.push(file.name);
+    for (const { name, lines } of found) added.push({ id: nextTrack++, name, lines, levelMm: core.TRACK_LEVEL_MM });
+  }
+  state.tracks.push(...added);
+  const none = empty.length ? ` No lines in ${empty.join(', ')}.` : '';
+  if (!added.length) { status('print', `No tracks imported.${none}`, true); return; }
+  status('print', `Imported ${added.length === 1 ? added[0].name : `${added.length} tracks`}.${none}`, Boolean(empty.length));
+  tracksChanged();
+});
+renderTracks();
+
 // Enlarged, the preview moves into the map's place (the whole screen on a phone),
 // and the settings stay beside it. Its ResizeObserver sizes the view to fit.
 const previewHome = $('print-preview').parentElement;
@@ -1593,23 +1697,27 @@ function pieceGeometry(m) {
     for (let v = 0; v < 3; v++) for (let k = 0; k < 3; k++) nrm[t * 9 + v * 3 + k] = view.getFloat32(o + k * 4, true);
   }
   // The sea floor in blue: top-surface vertices below sea level (the top comes first in the STL).
-  // The shoreline line dark, lakes and rivers blue like the sea, sunk roads dark grey, buildings, written next to last, in grey, and raised roads, written last, darker.
+  // The shoreline line dark, lakes and rivers blue like the sea, sunk roads dark grey, sunk tracks in their colour, buildings in grey,
+  // then raised roads darker, and raised tracks, written last, in their colour.
   const colours = new Float32Array(count * 9);
-  const land = new THREE.Color(0xc9b79c), sea = new THREE.Color(0x6f9bc7), built = new THREE.Color(0x9a9da3), groove = new THREE.Color(0x4a3f33), road = new THREE.Color(0x55595f);
+  const land = new THREE.Color(0xc9b79c), sea = new THREE.Color(0x6f9bc7), built = new THREE.Color(0x9a9da3), groove = new THREE.Color(0x4a3f33), road = new THREE.Color(0x55595f), trail = new THREE.Color(core.TRACK_COLOUR);
   const n = m.set.cells, step = m.set.widthMm / (n - 1);
   const topVertices = m.top * 3;
-  const firstRoad = (count - (m.roads?.triangles || 0)) * 3;
+  const firstTrack = (count - (m.tracks?.triangles || 0)) * 3;
+  const firstRoad = firstTrack - (m.roads?.triangles || 0) * 3;
   const firstBuilt = firstRoad - (m.buildings?.triangles || 0) * 3;
   const gridIndex = (v) => (n - 1 - Math.round(pos[v * 3 + 1] / step)) * n + Math.round(pos[v * 3] / step);
   const onShore = (v) => m.shore[gridIndex(v)];
   const onWater = (v) => m.water.mask[gridIndex(v)];
   const onRoad = (v) => m.roads.mask[gridIndex(v)];
+  const onTrack = (v) => m.tracks.mask[gridIndex(v)];
   // a label pocket: a triangle with no point above the pocket's depth, and one off the bed
   const depth = m.label?.depthMm;
   const inPocket = (t) => depth && [0, 1, 2].every((k) => pos[(t * 3 + k) * 3 + 2] <= depth + 1e-4) && [0, 1, 2].some((k) => pos[(t * 3 + k) * 3 + 2] > 1e-4);
   for (let v = 0; v < count * 3; v++) {
-    const c = v >= firstRoad ? road : v >= firstBuilt ? built
+    const c = v >= firstTrack ? trail : v >= firstRoad ? road : v >= firstBuilt ? built
       : (m.shore && v < topVertices && onShore(v)) || (v >= topVertices && inPocket(Math.floor(v / 3))) ? groove
+      : m.tracks?.mask && v < topVertices && onTrack(v) ? trail
       : m.roads?.mask && v < topVertices && onRoad(v) ? road
       : (m.scaled.seaMm != null && v < topVertices && pos[v * 3 + 2] < m.scaled.seaMm - 1e-3) || (m.water && v < topVertices && onWater(v)) ? sea : land;
     colours[v * 3] = c.r; colours[v * 3 + 1] = c.g; colours[v * 3 + 2] = c.b;
@@ -1649,6 +1757,7 @@ function renderPrintTable() {
     ...(m.buildings ? [['Buildings', buildingsText(m)]] : []),
     ...(m.roads ? [['Roads', roadsText(m)]] : []),
     ...(m.water ? [['Lakes and rivers', waterText(m)]] : []),
+    ...(m.tracks ? [['Tracks', tracksText(m)]] : []),
     ['STL', `${split ? `${pieces.length} files in one ZIP, ` : ''}${stlMb.toFixed(1)} MB, ${triangles.toLocaleString('en-US')} triangles`],
   ];
   $('print-table').innerHTML = `<tbody>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</tbody>`;
@@ -1722,6 +1831,12 @@ function waterText(m) {
     wideKm2 >= 1e-9 && `${area(wideKm2)} of wide river ${levelText(level.wide).toLowerCase()}`,
     riverKm >= 0.05 && `${length} of narrow river ${levelText(level.narrow).toLowerCase()}`].filter(Boolean);
   return parts.length ? parts.join('; ') : 'None of the kinds printed in OpenStreetMap here, or none big enough to show';
+}
+
+function tracksText({ tracks: t, set }) {
+  const length = (km) => (state.units === 'imperial' ? `${(km / 1.609344).toFixed(1)} mi` : `${km.toFixed(1)} km`);
+  return set.tracks.map((track, k) => `${escapeHtml(track.name)}: ${t.km[k] < 0.005 ? 'not on the print'
+    : `${length(t.km[k])}, ${core.TRACK_WIDTH_MM} mm wide, ${levelText(track.levelMm).toLowerCase()}`}`).join('; ');
 }
 
 /** A print's file name; a set of pieces adds its layout, and one piece of it its name. */
@@ -1899,6 +2014,10 @@ $('print-file').addEventListener('change', async () => {
   $('print-water').value = core.anyLevel(set.waterMm) ? 'osm' : 'none';
   if (core.anyLevel(set.waterMm)) for (const [kind, mm] of Object.entries(set.waterMm)) choose(`print-water-${kind}`, mm, levelText(mm));
   showWaterControls();
+  // the file's tracks take the place of the ones imported here, so the model is the file's
+  state.tracks = set.tracks.map((t) => ({ ...t, id: nextTrack++ }));
+  saveTracks();
+  renderTracks();
   setPrintCentre(centre);
   status('print', `Opened ${file.name}. Building the same model.`);
 });

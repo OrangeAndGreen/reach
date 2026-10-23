@@ -899,6 +899,7 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ['buildingDefaultM', 'Building height where OSM has none (m)', set.buildingDefaultM ?? DEFAULT_BUILDING_M],
     ...Object.keys(ROAD_CLASSES).map((cls) => [`${cls}Mm`, `${cap(cls)} roads from OpenStreetMap (mm up, negative sunk, 0 for none)`, set.roadMm?.[cls] ?? 0]),
     ...Object.entries(WATER_KEYS).map(([kind, k]) => [k, `${WATER_KINDS[kind]} from OpenStreetMap (mm up, negative sunk, 0 for none)`, set.waterMm?.[kind] ?? 0]),
+    ['tracks', 'Tracks of your own (each its own placemark, with its level in mm up, negative sunk)', set.tracks?.length ?? 0],
     ['piecesAcross', 'Pieces across (each one model width)', cols],
     ['piecesDown', 'Pieces down', rows],
   ];
@@ -984,11 +985,16 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     return `  <Placemark><name>Piece ${p.name}</name><styleUrl>#piece</styleUrl><Polygon><tessellate>1</tessellate><outerBoundaryIs><LinearRing><coordinates>${coordText(corners)}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>
 `;
   }).join('') : '';
+  // in full, as the centre is, so the file prints each track on the very same line
+  const trackPlacemarks = (set.tracks || []).map((t) => `  <Placemark><name>${escapeXml(t.name)}</name><styleUrl>#track</styleUrl><ExtendedData><Data name="trackMm"><value>${t.levelMm}</value></Data></ExtendedData><MultiGeometry>${t.lines
+    .map((line) => `<LineString><tessellate>1</tessellate><coordinates>${line.map(([lon, lat]) => `${lon},${lat},0`).join(' ')}</coordinates></LineString>`).join('')}</MultiGeometry></Placemark>
+`).join('');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
   <name>${escapeXml(`Reach print: ${centre.name}, ${set.sideKm} km`)}</name>
-  <Style id="square"><LineStyle><color>ff24548f</color><width>3</width></LineStyle><PolyStyle><color>2224548f</color></PolyStyle></Style>${plan ? `
+  <Style id="square"><LineStyle><color>ff24548f</color><width>3</width></LineStyle><PolyStyle><color>2224548f</color></PolyStyle></Style>${set.tracks?.length ? `
+  <Style id="track"><LineStyle><color>${kmlColor(TRACK_COLOUR)}</color><width>3</width></LineStyle></Style>` : ''}${plan ? `
   <Style id="piece"><LineStyle><color>ff24548f</color><width>1.5</width></LineStyle><PolyStyle><fill>0</fill></PolyStyle></Style>` : ''}
   <Placemark id="reach-print">
     <name>${escapeXml(`${set.sideKm} km print area`)}</name>
@@ -1000,7 +1006,7 @@ ${data(derived)}
     </ExtendedData>
     <Polygon><tessellate>1</tessellate><outerBoundaryIs><LinearRing><coordinates>${coordText(ring)}</coordinates></LinearRing></outerBoundaryIs></Polygon>
   </Placemark>
-${piecePlacemarks}  <Placemark><name>${escapeXml(centre.name)}</name><Point><coordinates>${centre.lon.toFixed(6)},${centre.lat.toFixed(6)},0</coordinates></Point></Placemark>
+${piecePlacemarks}${trackPlacemarks}  <Placemark><name>${escapeXml(centre.name)}</name><Point><coordinates>${centre.lon.toFixed(6)},${centre.lat.toFixed(6)},0</coordinates></Point></Placemark>
 </Document>
 </kml>
 `;
@@ -1074,6 +1080,11 @@ export function parsePrintKml(text) {
       // files from before pieces are one piece
       cols: values.piecesAcross == null ? 1 : Math.round(num('piecesAcross', 1, PIECES_MAX)),
       rows: values.piecesDown == null ? 1 : Math.round(num('piecesDown', 1, PIECES_MAX)),
+      // files from before tracks have none
+      tracks: parseTrackKml(text).filter((t) => t.levelMm != null).map(({ name, lines, levelMm }) => {
+        if (!Number.isFinite(levelMm) || Math.abs(levelMm) > 10) throw new Error(`the track "${name}"'s level is out of range`);
+        return { name, lines, levelMm };
+      }),
     },
   };
 }
@@ -2428,8 +2439,8 @@ export function roadLines(osm, bounds, widthMm, { frame = null, pieces = null } 
  * Each road as its own closed solid, as STL triangles (three points each) to
  * add to the terrain's: a ribbon its class's width, whose top is the ground
  * along it, averaged over ROAD_SMOOTH_MM either way, plus its class's level
- * in levels, and whose floor sits just under the lowest terrain beneath it, so
- * nothing floats. The top stays at least 0.2 mm over the terrain under it, so
+ * in levels (a track: its own width and level), and whose floor sits just
+ * under the lowest terrain beneath it, so nothing floats. The top stays at least 0.2 mm over the terrain under it, so
  * a road in a cutting still shows. Classes whose level isn't up are left to
  * carveRoads. zMm is the terrain in mm (row 0 north); mmPerMetre is model mm
  * per metre of ground across (both from printHeights).
@@ -2444,12 +2455,11 @@ export function roadTriangles(roads, zMm, n, { widthMm, mmPerMetre, levels = ROA
   };
   const dir = (a, b) => { const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1; return [dx / l, dy / l]; };
   const tris = [];
-  for (const { cls, line } of roads) {
-    const liftMm = levels[cls] || 0;
+  for (const way of roads) {
+    const liftMm = wayLevel(way, levels);
     if (liftMm <= 0) continue;
-    const { widthMm: classMm, widthM } = ROAD_CLASSES[cls];
-    const half = Math.max(classMm, widthM * mmPerMetre) / 2;
-    const pts = roadPoints(line, step);
+    const half = wayHalf(way, mmPerMetre);
+    const pts = roadPoints(way.line, step);
     const m = pts.length;
     if (m < 2) continue;
     const smooth = roadGround(pts, zMm, n, widthMm);
@@ -2484,6 +2494,16 @@ export function roadTriangles(roads, zMm, n, { widthMm, mmPerMetre, levels = ROA
   return tris;
 }
 
+/** A way's level: its own levelMm (a track's), or its class's in levels. */
+const wayLevel = (way, levels) => way.levelMm ?? levels[way.cls] ?? 0;
+
+/** Half a way's width on the model: its own widthMm (a track's), or its class's, or the real carriageway where that is wider. */
+function wayHalf(way, mmPerMetre) {
+  if (way.widthMm) return way.widthMm / 2;
+  const { widthMm, widthM } = ROAD_CLASSES[way.cls];
+  return Math.max(widthMm, widthM * mmPerMetre) / 2;
+}
+
 /** A road line's points at most step apart, keeping the line's own corners. */
 function roadPoints(line, step) {
   const pts = [line[0]];
@@ -2512,7 +2532,7 @@ function roadGround(pts, zMm, n, widthMm) {
 }
 
 /**
- * Cuts the roads whose class's level in levels is down into a millimetre grid
+ * Cuts the roads whose class's level in levels (a track: its own) is down into a millimetre grid
  * (row 0 north) as grooves: the grid points within half the road's width of
  * its line, and the point nearest it all along, sink by the level under the
  * ground along the road, averaged over ROAD_SMOOTH_MM either way, so the
@@ -2525,13 +2545,12 @@ function roadGround(pts, zMm, n, widthMm) {
 export function carveRoads(mm, roads, n, { widthMm, mmPerMetre, levels = ROAD_LEVELS, skip = null, heights = null, minMm = 0.6 }) {
   const step = widthMm / (n - 1);
   const bed = new Float64Array(n * n).fill(Infinity);
-  for (const { cls, line } of roads) {
-    const depthMm = -(levels[cls] || 0);
+  for (const way of roads) {
+    const depthMm = -wayLevel(way, levels);
     if (depthMm <= 0) continue;
-    const { widthMm: classMm, widthM } = ROAD_CLASSES[cls];
-    const half = Math.max(classMm, widthM * mmPerMetre) / 2;
+    const half = wayHalf(way, mmPerMetre);
     // half a grid step apart, so the nearest grid point moves at most one step each way between them
-    const pts = roadPoints(line, step / 2);
+    const pts = roadPoints(way.line, step / 2);
     const smooth = roadGround(pts, mm, n, widthMm);
     stampLine(pts.map(([x, y], k) => ({ x, y, half, z: smooth[k] - depthMm })), n, widthMm, bed);
   }
@@ -2582,6 +2601,73 @@ function setLevels(mm, bed, n, { skip = null, heights = null, minMm = 0.6, raise
     mask[k] = 1;
   }
   return { mm: out, mask };
+}
+
+// ---------- tracks ----------
+
+/** A track's width on the model (mm), and its level when it is first imported (mm up). */
+export const TRACK_WIDTH_MM = 1.2;
+export const TRACK_LEVEL_MM = 0.8;
+/** A track's colour on the map, in the preview and in Google Earth. */
+export const TRACK_COLOUR = '#c4472d';
+
+/**
+ * The tracks in a KML file, one for each placemark with lines in it, as
+ * { name, lines, levelMm }: lines a list of [lon, lat] lines, from its
+ * LineStrings and its gx:Tracks (a GPS log's), and levelMm the level a print's
+ * KML saved with it (Data trackMm), or undefined. Placemarks with no line, and
+ * lines of fewer than two good points, are left out. A placemark without a name
+ * takes fallback, numbered when there are more than one.
+ */
+export function parseTrackKml(text, fallback = 'Track') {
+  const tracks = [];
+  let unnamed = 0;
+  for (const [, body] of text.matchAll(/<Placemark\b[^>]*>([\s\S]*?)<\/Placemark>/g)) {
+    const lines = [];
+    for (const [, coords] of body.matchAll(/<LineString\b[^>]*>[\s\S]*?<coordinates>([\s\S]*?)<\/coordinates>/g)) {
+      lines.push(coords.trim().split(/\s+/).map((t) => t.split(',').map(Number)));
+    }
+    for (const [, track] of body.matchAll(/<gx:Track\b[^>]*>([\s\S]*?)<\/gx:Track>/g)) {
+      lines.push([...track.matchAll(/<gx:coord>([\s\S]*?)<\/gx:coord>/g)].map(([, c]) => c.trim().split(/\s+/).map(Number)));
+    }
+    const good = lines.map((line) => line.filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180)
+      .map(([lon, lat]) => [lon, lat])).filter((line) => line.length > 1);
+    if (!good.length) continue;
+    const name = body.match(/<name>([\s\S]*?)<\/name>/)?.[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/, '$1').trim();
+    const level = body.match(/<Data\s+name="trackMm"[^>]*>[\s\S]*?<value>([\s\S]*?)<\/value>/)?.[1];
+    tracks.push({ name: name ? unescapeXml(name) : null, lines: good, levelMm: level == null ? undefined : Number(level) });
+    if (!name) unnamed++;
+  }
+  let k = 0;
+  for (const t of tracks) if (!t.name) t.name = unnamed > 1 ? `${fallback} ${++k}` : fallback;
+  return tracks;
+}
+
+/** A track's length on the ground (km). */
+export const trackKm = (track) => track.lines.reduce((s, line) =>
+  s + line.reduce((t, [lon, lat], i) => (i ? t + haversineKm({ lat: line[i - 1][1], lon: line[i - 1][0] }, { lat, lon }) : t), 0), 0);
+
+/**
+ * The tracks printed (those with a level) on the model, in millimetres as
+ * roadLines places roads and cut to the print as it cuts them, as { cls:
+ * 'track', track, line, levelMm, widthMm }, track the index into tracks. They
+ * go to roadTriangles and carveRoads as roads do, at their own width and level.
+ */
+export function trackLines(tracks, { frame, widthMm, pieces = null }) {
+  const clips = pieces || [[[0, 0], [widthMm, 0], [widthMm, widthMm], [0, widthMm]]];
+  const out = [];
+  tracks.forEach(({ lines, levelMm }, track) => {
+    if (!levelMm) return;
+    for (const line of lines) {
+      const mm = line.map(([lon, lat]) => frame.toMm(lon, lat));
+      for (const clip of clips) {
+        for (const run of clipLine(mm, clip)) {
+          if (lineLength(run) >= TRACK_WIDTH_MM) out.push({ cls: 'track', track, line: run, levelMm, widthMm: TRACK_WIDTH_MM });
+        }
+      }
+    }
+  });
+  return out;
 }
 
 // ---------- lakes and wide rivers ----------
