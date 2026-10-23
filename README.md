@@ -18,7 +18,7 @@ Three tools on one map:
   Central Park. On the map, drag the centre dot to move it or the outline to
   resize it: the shape grows about its centre, a rectangle's side moves alone,
   and sizes snap to 10 m, 100 m or 1 km as they grow. On prints of 2 km or less across it can raise the buildings
-  from OpenStreetMap too, and on prints of 50 km or less the main roads and the lakes and rivers. Each road class (motorway, trunk, primary) and each kind of water (lakes, wide rivers, narrow rivers) has its own level: raised or sunk 0.4 to 2 mm, or left out. By default roads are raised 1.2, 0.8 and 0.4 mm and water is sunk 0.6 mm. Choose the model width (the shape's width across), the detail, a height stretch and
+  from OpenStreetMap too, and on prints of 50 km or less the main roads and the lakes and rivers. Each road class (motorway, trunk, primary) and each kind of water (lakes, wide rivers, narrow rivers) has its own level: raised or sunk 0.4 to 2 mm, or left out. By default roads are raised 1.2, 0.8 and 0.4 mm and water is sunk 0.6 mm. Tracks of your own (a hike, a ride, a route drawn in Google Earth) come in from KML files, one or several at a time, and each sits in a list with its own level (raised 0.8 mm at first) and a button to take it off the model; they show on the map in red, dashed when left out, and are remembered between visits. Choose the model width (the shape's width across), the detail, a height stretch and
   the base thickness, and whether the sea floor comes too (down to 50 m, 200 m,
   1,000 m or all the way, with its own depth stretch), and whether to mark the
   shoreline with a groove or a ridge (0.4 or 0.8 mm) to paint or just to see the coast by. It can also cut a label 0.6 mm up into the underside, mirrored so it reads when you turn the print over: the centre's coordinates, the ground covered and the height stretch (and the depth stretch, when the sea floor has its own), under an arrow pointing north, with up to three lines of your own text between the arrow and them, or your text alone. The corners are rounded, 5 mm by default (or 10 mm, or square), so a wide slab is slower to lift off the bed: a square's ground is squeezed into the curve, another shape's is cut off along it, and a star rounds only its points. A preview you can turn shows the model, beside its real
@@ -26,7 +26,7 @@ Three tools on one map:
   which grows with the square root of how flat it is (Mt Washington's 20 km
   ×1.5, Boston's ×6, at most ×20), with a button to use it. The default is the 20 km around Mt Washington:
   120 × 120 × 17.6 mm at ×1.5. **Download KML** saves the outline for Google
-  Earth along with every setting (centre, size, width, detail, stretch, base, sea floor, shoreline, label and its text, corners, shape, turn)
+  Earth along with every setting (centre, size, width, detail, stretch, base, sea floor, shoreline, label and its text, corners, shape, turn, and each track printed, as its own line with its level)
   and what came of them (tile zoom, metres per pixel, lowest and highest point,
   model height, scale, triangle count, STL file name). A KML from before the per-class levels opens with its roads raised as they were and its water all sunk its one depth. **Open KML** reads one
   back and builds the same STL again. **Download map image** saves the map
@@ -149,6 +149,12 @@ ES modules, which is why it needs the little server rather than file://.
   them. Classes are as OSM tags them: Chicago's arterials (Cermak, Roosevelt,
   Michigan Avenue) are secondary, so a 10 km Loop print shows only its
   expressways and Lake Shore Drive.
+- **Tracks.** Every LineString and `gx:Track` (a GPS log's) in a KML
+  placemark is one track, named as the placemark is; points, polygons and the
+  file's heights are ignored. A track is 1.2 mm wide on the model at any scale,
+  and printed as a road is: raised, its own solid on the ground along it
+  smoothed over 1.5 mm; sunk, a groove that leaves lakes and rivers' areas
+  alone and keeps 0.6 mm of model under it.
 - **Lakes and rivers.** Water areas (`natural=water` and `waterway=riverbank`,
   ways and multipolygons, but not wastewater or anything covered) fill the grid
   points inside them, even-odd so islands stay land. Water at or under sea level is left to the sea, and
