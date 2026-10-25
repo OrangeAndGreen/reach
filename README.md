@@ -18,7 +18,7 @@ Three tools on one map:
   Central Park. On the map, drag the centre dot to move it or the outline to
   resize it: the shape grows about its centre, a rectangle's side moves alone,
   and sizes snap to 10 m, 100 m or 1 km as they grow. On prints of 2 km or less across it can raise the buildings
-  from OpenStreetMap too, and on prints of 50 km or less the main roads and the lakes and rivers. Each road class (motorway, trunk, primary) and each kind of water (lakes, wide rivers, narrow rivers) has its own level: raised or sunk 0.4 to 2 mm, or left out. By default roads are raised 1.2, 0.8 and 0.4 mm and water is sunk 0.6 mm. Tracks of your own (a hike, a ride, a route drawn in Google Earth) come in from KML files, one or several at a time, and each sits in a list with its own level (raised 0.8 mm at first) and a button to take it off the model; they show on the map in red, dashed when left out, and are remembered between visits. Choose the model width (the shape's width across), the detail, a height stretch and
+  from OpenStreetMap too, and on prints of 50 km or less the main roads and the lakes and rivers, and on prints of 25 km or less the secondary roads as well if you ask for them. Each road class (motorway, trunk, primary, secondary) and each kind of water (lakes, wide rivers, narrow rivers) has its own level: raised or sunk 0.4 to 2 mm, or left out. By default roads are raised 1.2, 0.8, 0.4 and 0.4 mm and water is sunk 0.6 mm. Tracks of your own (a hike, a ride, a route drawn in Google Earth) come in from KML files, one or several at a time, and each sits in a list with its own level (raised 0.8 mm at first) and a button to take it off the model; they show on the map in red, dashed when left out, and are remembered between visits. Choose the model width (the shape's width across), the detail, a height stretch and
   the base thickness, and whether the sea floor comes too (down to 50 m, 200 m,
   1,000 m or all the way, with its own depth stretch), and whether to mark the
   shoreline with a groove or a ridge (0.4 or 0.8 mm) to paint or just to see the coast by. It can also cut a label 0.6 mm up into the underside, mirrored so it reads when you turn the print over: the centre's coordinates, the ground covered and the height stretch (and the depth stretch, when the sea floor has its own), under an arrow pointing north, with up to three lines of your own text between the arrow and them, or your text alone. The corners are rounded, 5 mm by default (or 10 mm, or square), so a wide slab is slower to lift off the bed: a square's ground is squeezed into the curve, another shape's is cut off along it, and a star rounds only its points. A preview you can turn shows the model, beside its real
@@ -136,8 +136,9 @@ ES modules, which is why it needs the little server rather than file://.
   as its convex hull. Footprints under 0.4 mm² on the model are left out. Roofs on posts
   (`building=roof`) and underground buildings are skipped. A 2 km square of
   Manhattan is about 3,000 buildings and a 9 MB STL.
-- **Roads.** Motorway, trunk and primary ways, joined end to end per class,
-  are 1.6, 1.2 or 0.8 mm wide (or the real carriageway, 25, 20 or 14 m, where
+- **Roads.** Motorway, trunk and primary ways, and secondary ones when asked
+  for, joined end to end per class, are 1.6, 1.2, 0.8 or 0.6 mm wide (or the
+  real carriageway, 25, 20, 14 or 10 m, where
   a small print makes that wider), at their class's level over or under the
   ground along them averaged over 1.5 mm either way. A raised road is its own
   closed solid, a ribbon whose floor sits just under the terrain. A sunk road
@@ -147,8 +148,10 @@ ES modules, which is why it needs the little server rather than file://.
   keeps 0.6 mm of model under it. Tunnels
   drop out and ramps aren't fetched. Where solids cross, the slicer merges
   them. Classes are as OSM tags them: Chicago's arterials (Cermak, Roosevelt,
-  Michigan Avenue) are secondary, so a 10 km Loop print shows only its
-  expressways and Lake Shore Drive.
+  Michigan Avenue) are secondary, so a 10 km Loop print of the main roads
+  shows only its expressways and Lake Shore Drive. Secondary roads are fetched
+  and kept apart from the main ones, so asking for them never reads the main
+  roads again.
 - **Tracks.** Every LineString and `gx:Track` (a GPS log's) in a KML
   placemark is one track, named as the placemark is; points, polygons and the
   file's heights are ignored. A track is 1.2 mm wide on the model at any scale,

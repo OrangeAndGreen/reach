@@ -24,6 +24,11 @@ test('the roads query asks for motorway, trunk and primary ways in the box', () 
   assert.match(q, /out geom;$/);
 });
 
+test('the secondary roads query asks for secondary ways alone', () => {
+  const q = core.overpassRoadsQuery({ south: 41.8, west: -87.7, north: 41.9, east: -87.6 }, ['secondary']);
+  assert.match(q, /way\["highway"~"\^\(secondary\)\$"\]/);
+});
+
 test('joinLines joins lines that meet, whichever way round they run', () => {
   const joined = core.joinLines([[[2, 0], [3, 0]], [[0, 0], [1, 0]], [[2, 0], [1, 0]], [[9, 9], [8, 8]]]);
   assert.equal(joined.length, 2);
@@ -42,7 +47,7 @@ test('clipLine keeps the runs inside the square, cut at its edges', () => {
   assert.deepEqual(core.clipLine([[-5, -5], [-1, 20]], square), []);
 });
 
-test('roadLines keeps the three classes, drops tunnels, and joins ways end to end', () => {
+test('roadLines keeps the four classes, drops tunnels, and joins ways end to end', () => {
   const bounds = { west: 0, east: 0.01, south: 0, north: 0.01 };
   const g = (pts) => pts.map(([lon, lat]) => ({ lon, lat }));
   const osm = { elements: [
@@ -50,11 +55,12 @@ test('roadLines keeps the three classes, drops tunnels, and joins ways end to en
     { type: 'way', tags: { highway: 'motorway' }, geometry: g([[0.005, 0.005], [0.009, 0.005]]) },
     { type: 'way', tags: { highway: 'primary', tunnel: 'yes' }, geometry: g([[0.001, 0.002], [0.009, 0.002]]) },
     { type: 'way', tags: { highway: 'primary', tunnel: 'no' }, geometry: g([[0.001, 0.008], [0.009, 0.008]]) },
+    { type: 'way', tags: { highway: 'secondary' }, geometry: g([[0.001, 0.006], [0.009, 0.006]]) },
     { type: 'way', tags: { highway: 'residential' }, geometry: g([[0.001, 0.003], [0.009, 0.003]]) },
     { type: 'way', tags: { highway: 'motorway_link' }, geometry: g([[0.001, 0.004], [0.009, 0.004]]) },
   ] };
   const roads = core.roadLines(osm, bounds, 100);
-  assert.deepEqual(roads.map((r) => r.cls), ['motorway', 'primary']);
+  assert.deepEqual(roads.map((r) => r.cls), ['motorway', 'primary', 'secondary']);
   near(core.lineLength(roads[0].line), 80, 1e-6);
 });
 
@@ -110,7 +116,7 @@ test('a road in a cutting still stands over the banks beside it', () => {
 
 test('a print KML keeps the roads setting and the length of each class printed', () => {
   const centre = { name: 'Chicago Loop', lat: 41.88, lon: -87.63 };
-  const set = { sideKm: 10, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1, baseMm: 3, seaFloorM: 0, depthStretch: 1, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: { motorway: 1.2, trunk: -0.8, primary: 0 }, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks: [] };
+  const set = { sideKm: 10, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1, baseMm: 3, seaFloorM: 0, depthStretch: 1, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: { motorway: 1.2, trunk: -0.8, primary: 0, secondary: -0.4 }, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks: [] };
   const model = { zoom: 13, pixelM: 14, lowM: 170, highM: 200, reliefMm: 0.4, triangles: 90000,
     roads: { count: 40, km: { motorway: 31.24, primary: 88 }, triangles: 40000, readAt: '2026-10-22' } };
   const kml = core.printKml({ centre, set, model });
@@ -156,10 +162,19 @@ test('a sunk road keeps the model under it', () => {
   near(mm[10 * n + 10], 0.6, 1e-9);
 });
 
-test('a KML from before each road class had its own level raises them as they were', () => {
+test('a KML from before each road class had its own level raises the main ones as they were', () => {
   const centre = { name: 'Chicago Loop', lat: 41.88, lon: -87.63 };
   const set = { sideKm: 10, widthMm: 120, cells: 201, exaggeration: 1, baseMm: 3, roadMm: core.NO_ROADS, waterMm: core.NO_WATER };
-  const kml = core.printKml({ centre, set }).replace(/ *<Data name="(motorway|trunk|primary)Mm">[\s\S]*?<\/Data>\n/g, '')
+  const kml = core.printKml({ centre, set }).replace(/ *<Data name="(motorway|trunk|primary|secondary)Mm">[\s\S]*?<\/Data>\n/g, '')
     .replace('</ExtendedData>', '<Data name="roads"><value>1</value></Data></ExtendedData>');
-  assert.deepEqual(core.parsePrintKml(kml).set.roadMm, core.ROAD_LEVELS);
+  assert.deepEqual(core.parsePrintKml(kml).set.roadMm, { ...core.ROAD_LEVELS, secondary: 0 });
+});
+
+test('a KML from before secondary roads has none, and one with them keeps their level', () => {
+  const centre = { name: 'Chicago Loop', lat: 41.88, lon: -87.63 };
+  const set = { sideKm: 10, widthMm: 120, cells: 201, exaggeration: 1, baseMm: 3, roadMm: core.ROAD_LEVELS, waterMm: core.NO_WATER };
+  const kml = core.printKml({ centre, set });
+  assert.equal(core.parsePrintKml(kml).set.roadMm.secondary, core.ROAD_CLASSES.secondary.liftMm);
+  const before = kml.replace(/ *<Data name="secondaryMm">[\s\S]*?<\/Data>\n/, '');
+  assert.deepEqual(core.parsePrintKml(before).set.roadMm, { ...core.ROAD_LEVELS, secondary: 0 });
 });

@@ -1071,9 +1071,10 @@ export function parsePrintKml(text) {
       // files from before buildings have none
       buildings: values.buildings === '1',
       buildingDefaultM: values.buildingDefaultM == null ? DEFAULT_BUILDING_M : num('buildingDefaultM', 1, 100),
-      // files from before roads have none, and from before a level for each class have them raised as they were
+      // files from before roads have none, from before a level for each class have the main ones raised as they were,
+      // and from before secondary roads have none of those
       roadMm: Object.fromEntries(Object.keys(ROAD_CLASSES).map((cls) => [cls,
-        values[`${cls}Mm`] != null ? num(`${cls}Mm`, -10, 10) : values.roads === '1' ? ROAD_LEVELS[cls] : 0])),
+        values[`${cls}Mm`] != null ? num(`${cls}Mm`, -10, 10) : values.roads === '1' && MAIN_ROADS.includes(cls) ? ROAD_LEVELS[cls] : 0])),
       // files from before lakes and rivers have none, and from before a level for each kind have them all sunk one depth
       waterMm: Object.fromEntries(Object.entries(WATER_KEYS).map(([kind, k]) => [kind,
         values[k] != null ? num(k, -10, 10) : values.waterMm != null ? -num('waterMm', 0, 10) : 0])),
@@ -2321,9 +2322,14 @@ export const ROAD_CLASSES = {
   motorway: { widthMm: 1.6, liftMm: 1.2, widthM: 25 },
   trunk: { widthMm: 1.2, liftMm: 0.8, widthM: 20 },
   primary: { widthMm: 0.8, liftMm: 0.4, widthM: 14 },
+  secondary: { widthMm: 0.6, liftMm: 0.4, widthM: 10 },
 };
+/** The main road classes, fetched as one; secondary roads are fetched on their own, only when asked for. */
+export const MAIN_ROADS = ['motorway', 'trunk', 'primary'];
 /** Roads come from OpenStreetMap only on prints this size across or smaller. Not measured: past 25 km the query may be slow or turned away by Overpass. */
 export const ROADS_MAX_KM = 50;
+/** Secondary roads, several times as many as the main ones, only on prints this size across or smaller. Not measured either. */
+export const SECONDARY_ROADS_MAX_KM = 25;
 /** A road's top follows the ground averaged over this far either way along it (mm on the model), so it reads as graded. */
 export const ROAD_SMOOTH_MM = 1.5;
 /**
@@ -2342,9 +2348,9 @@ export const NO_WATER = { lakes: 0, wide: 0, narrow: 0 };
 /** True when any class or kind of a set of levels prints. */
 export const anyLevel = (levels) => Object.values(levels || {}).some((v) => v !== 0);
 
-/** The Overpass query for every motorway, trunk and primary road in a lon/lat box, or in any of a list of them, with its line. */
-export function overpassRoadsQuery(b) {
-  const parts = overpassBoxes(b).map((box) => `way["highway"~"^(${Object.keys(ROAD_CLASSES).join('|')})$"](${box});`);
+/** The Overpass query for every road of the classes (the main ones unless told) in a lon/lat box, or in any of a list of them, with its line. */
+export function overpassRoadsQuery(b, classes = MAIN_ROADS) {
+  const parts = overpassBoxes(b).map((box) => `way["highway"~"^(${classes.join('|')})$"](${box});`);
   return `[out:json][timeout:90];(${parts.join('')});out geom;`;
 }
 
@@ -2406,7 +2412,7 @@ export function clipLine(line, clip) {
 export const lineLength = (line) => line.reduce((s, p, i) => (i ? s + Math.hypot(p[0] - line[i - 1][0], p[1] - line[i - 1][1]) : 0), 0);
 
 /**
- * Motorway, trunk and primary roads from an Overpass reply, in model
+ * Motorway, trunk, primary and secondary roads from an Overpass reply, in model
  * millimetres (x east, y north, the square's south-west corner at 0,0) and
  * cut to the square, as { cls, line }. Ways of a class that meet end to end
  * are joined first, so a road is one solid rather than a string of them.
@@ -2998,7 +3004,7 @@ export function zipFiles(files, made = new Date()) {
  * 450 m at Boston), so the box asked for is at most a cell wider each way than
  * a 2 km print; roads and water in zoom 13 cells (4.9 km, 3.6 km).
  */
-export const OSM_CELL_ZOOM = { buildings: 16, roads: 13, water: 13 };
+export const OSM_CELL_ZOOM = { buildings: 16, roads: 13, secondary: 13, water: 13 };
 /** Saved cells older than this many days are read again. */
 export const OSM_CELL_DAYS = 90;
 

@@ -310,6 +310,7 @@
             <select id="print-roads">
               <option value="none" selected>None</option>
               <option value="osm">Main roads</option>
+              <option value="secondary">Main + secondary roads</option>
             </select>
           </div>
         </div>
@@ -325,6 +326,10 @@
           <div class="field">
             <label for="print-road-primary">Primary roads</label>
             <select id="print-road-primary" class="level" data-level="0.4"></select>
+          </div>
+          <div id="print-road-secondary-field" class="field">
+            <label for="print-road-secondary">Secondary roads</label>
+            <select id="print-road-secondary" class="level" data-level="0.4"></select>
           </div>
         </div>
         <p id="print-roads-hint" class="hint" hidden></p>

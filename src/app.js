@@ -776,7 +776,7 @@ function printSettings() {
     bearing: Number($('print-turn').value),
     buildings: $('print-buildings').value === 'osm' && Number($('print-side').value) <= core.BUILDINGS_MAX_KM,
     buildingDefaultM: Number($('print-default').value),
-    roadMm: $('print-roads').value === 'osm' && Number($('print-side').value) <= core.ROADS_MAX_KM ? levelsOf('road', core.ROAD_CLASSES) : core.NO_ROADS,
+    roadMm: roadSetting(),
     waterMm: $('print-water').value === 'osm' && Number($('print-side').value) <= core.WATER_MAX_KM ? levelsOf('water', core.WATER_KINDS) : core.NO_WATER,
     tracks: state.tracks.filter((t) => t.levelMm).map(({ name, lines, levelMm }) => ({ name, lines, levelMm })),
     cols,
@@ -791,6 +791,19 @@ function printSettings() {
 function wholeShape(set) {
   if (set.cols * set.rows === 1) return set;
   return { ...set, widthMm: set.widthMm * set.cols, shape: 'rectangle', aspect: set.cols / set.rows, cols: 1, rows: 1 };
+}
+
+/**
+ * The roads menu and level selects as { class: mm }: none on a print too big
+ * for roads, and secondary roads only when asked for and the print is small
+ * enough for them.
+ */
+function roadSetting() {
+  const mode = $('print-roads').value, sideKm = Number($('print-side').value);
+  if (mode === 'none' || sideKm > core.ROADS_MAX_KM) return core.NO_ROADS;
+  const level = levelsOf('road', core.ROAD_CLASSES);
+  if (mode !== 'secondary' || sideKm > core.SECONDARY_ROADS_MAX_KM) level.secondary = 0;
+  return level;
 }
 
 /** The level selects of roads or water (prefix), as { class or kind: mm }. */
@@ -1055,9 +1068,14 @@ function overpass(query) {
   return osmCache.get(query);
 }
 
-const OSM_QUERY = { buildings: core.overpassBuildingsQuery, roads: core.overpassRoadsQuery, water: core.overpassWaterQuery };
+const OSM_QUERY = {
+  buildings: core.overpassBuildingsQuery,
+  roads: core.overpassRoadsQuery,
+  secondary: (b) => core.overpassRoadsQuery(b, ['secondary']),
+  water: core.overpassWaterQuery,
+};
 /**
- * OpenStreetMap's buildings, roads or water in a lon/lat box, as { osm, readAt }:
+ * OpenStreetMap's buildings, main roads, secondary roads or water in a lon/lat box, as { osm, readAt }:
  * the cells kept from earlier visits, with only the ones missing or older
  * than core.OSM_CELL_DAYS asked of Overpass (onFetch is called first), and
  * kept in turn. readAt is the oldest cell's.
@@ -1137,12 +1155,28 @@ async function buildModel() {
     let roadReply = null;
     if (core.anyLevel(set.roadMm)) {
       const corner = plan.pieces.flatMap(({ frame: { bounds: b } }) => [{ lon: b.west, lat: b.south }, { lon: b.east, lat: b.north }]);
-      try {
-        roadReply = await osmArea('roads', core.lonLatBounds(corner), () => status('print', 'Fetching the roads from OpenStreetMap…'));
-      } catch (err) {
-        missed += ` Couldn't fetch the roads (${err.message}), so the print has none.`;
+      const bounds = core.lonLatBounds(corner);
+      // the main roads and the secondary ones are kept apart, so asking for secondary roads leaves the main ones' saved areas as they are
+      const replies = [];
+      if (core.MAIN_ROADS.some((cls) => set.roadMm[cls])) {
+        try {
+          replies.push(await osmArea('roads', bounds, () => status('print', 'Fetching the roads from OpenStreetMap…')));
+        } catch (err) {
+          missed += ` Couldn't fetch the main roads (${err.message}), so the print has none.`;
+        }
+        if (run !== modelRun) return;
       }
-      if (run !== modelRun) return;
+      if (set.roadMm.secondary) {
+        try {
+          replies.push(await osmArea('secondary', bounds, () => status('print', 'Fetching the secondary roads from OpenStreetMap…')));
+        } catch (err) {
+          missed += ` Couldn't fetch the secondary roads (${err.message}), so the print has none.`;
+        }
+        if (run !== modelRun) return;
+      }
+      if (replies.length) {
+        roadReply = { osm: core.mergeElements(replies.map((r) => r.osm.elements)), readAt: replies.map((r) => r.readAt).sort()[0] };
+      }
     }
     let waterReply = null;
     if (core.anyLevel(set.waterMm)) {
@@ -1481,16 +1515,23 @@ for (const el of document.querySelectorAll('select.level')) {
   el.addEventListener('change', () => { showRoadControls(); showWaterControls(); buildModel(); });
 }
 function showRoadControls() {
-  const fits = Number($('print-side').value) <= core.ROADS_MAX_KM;
-  const wanted = $('print-roads').value === 'osm';
-  const c = core.ROAD_CLASSES, level = levelsOf('road', c);
+  const sideKm = Number($('print-side').value);
+  const fits = sideKm <= core.ROADS_MAX_KM;
+  const mode = $('print-roads').value, wanted = mode !== 'none';
+  const secondaryWanted = mode === 'secondary', secondaryFits = sideKm <= core.SECONDARY_ROADS_MAX_KM;
+  const c = core.ROAD_CLASSES, level = roadSetting();
   $('print-road-levels').hidden = !wanted || !fits;
+  $('print-road-secondary-field').hidden = !secondaryWanted || !secondaryFits;
   $('print-roads-hint').hidden = !wanted;
   const raised = Object.values(level).some((v) => v > 0), sunk = Object.values(level).some((v) => v < 0);
+  const widths = secondaryWanted && secondaryFits
+    ? `Motorways, trunk, primary and secondary roads are ${c.motorway.widthMm}, ${c.trunk.widthMm}, ${c.primary.widthMm} and ${c.secondary.widthMm} mm wide`
+    : `Motorways, trunk and primary roads are ${c.motorway.widthMm}, ${c.trunk.widthMm} and ${c.primary.widthMm} mm wide`;
   $('print-roads-hint').textContent = !fits
     ? `Roads need a print of ${core.ROADS_MAX_KM} km or less across, so this one has none.`
     : !raised && !sunk ? 'Every class is left out, so the print has no roads.'
-    : [`Motorways, trunk and primary roads are ${c.motorway.widthMm}, ${c.trunk.widthMm} and ${c.primary.widthMm} mm wide, each class at its own level over or under the ground along it, smoothed so it reads as graded.`,
+    : [`${widths}, each class at its own level over or under the ground along it, smoothed so it reads as graded.`,
+      secondaryWanted && !secondaryFits && `Secondary roads need a print of ${core.SECONDARY_ROADS_MAX_KM} km or less across, so this one has the main roads alone.`,
       raised && 'A raised road is its own solid standing on the ground.',
       sunk && 'A sunk road is a groove cut into the ground, which leaves the water it crosses alone.',
       'Tunnels and ramps are left out.'].filter(Boolean).join(' ');
@@ -2008,8 +2049,9 @@ $('print-file').addEventListener('change', async () => {
   choose('print-default', set.buildingDefaultM, core.formatHeight(set.buildingDefaultM, state.units));
   showBuildingControls();
   // a file with every class or kind left out keeps the selects at their defaults
-  $('print-roads').value = core.anyLevel(set.roadMm) ? 'osm' : 'none';
-  if (core.anyLevel(set.roadMm)) for (const [cls, mm] of Object.entries(set.roadMm)) choose(`print-road-${cls}`, mm, levelText(mm));
+  $('print-roads').value = !core.anyLevel(set.roadMm) ? 'none' : set.roadMm.secondary ? 'secondary' : 'osm';
+  // a file without secondary roads leaves their select at its default, ready for when they're asked for
+  if (core.anyLevel(set.roadMm)) for (const [cls, mm] of Object.entries(set.roadMm)) if (mm || cls !== 'secondary') choose(`print-road-${cls}`, mm, levelText(mm));
   showRoadControls();
   $('print-water').value = core.anyLevel(set.waterMm) ? 'osm' : 'none';
   if (core.anyLevel(set.waterMm)) for (const [kind, mm] of Object.entries(set.waterMm)) choose(`print-water-${kind}`, mm, levelText(mm));
