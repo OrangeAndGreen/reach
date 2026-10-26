@@ -150,7 +150,7 @@ button.primary:disabled { opacity: 0.55; cursor: progress; }
 .places button { background: none; border: 0; cursor: pointer; color: var(--ink-3); font-size: 18px; line-height: 1; padding: 2px 6px; }
 /* imported tracks: swatch, name, length, level, remove */
 .tracks li { grid-template-columns: 12px minmax(0, 1fr) auto auto auto; }
-.tracks select { padding: 3px 6px; font-size: 13px; }
+.tracks input.level { padding: 3px 6px; font-size: 13px; width: 5.5em; }
 .field button.add {
   align-self: flex-start; background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 12px; cursor: pointer;
 }

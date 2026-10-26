@@ -767,7 +767,7 @@ function printSettings() {
     baseMm: Number($('print-base').value),
     seaFloorM: Number($('print-sea').value),
     depthStretch: Number($('print-depth').value),
-    ...shoreSetting($('print-shore').value),
+    ...shoreSetting(levelOf($('print-shore'))),
     label: ['on', 'both'].includes($('print-label').value),
     labelText: ['text', 'both'].includes($('print-label').value) ? $('print-text').value : '',
     cornerMm: Number($('print-corner').value),
@@ -806,20 +806,43 @@ function roadSetting() {
   return level;
 }
 
-/** The level selects of roads or water (prefix), as { class or kind: mm }. */
+/** The level inputs of roads or water (prefix), as { class or kind: mm }. */
 function levelsOf(prefix, kinds) {
-  return Object.fromEntries(Object.keys(kinds).map((k) => [k, Number($(`print-${prefix}-${k}`).value)]));
+  return Object.fromEntries(Object.keys(kinds).map((k) => [k, levelOf($(`print-${prefix}-${k}`))]));
 }
 
-/** "Raised 0.8 mm", "Sunk 0.6 mm" or "Left out", for a level select or the table. */
+/** A level input's mm on the model: positive raises, negative sinks, 0 leaves it out. */
+function levelOf(el) {
+  return core.parseLevelMm(el.value) ?? Number(el.dataset.mm ?? 0);
+}
+
+/** Puts mm in a level input, as the value it goes back to if what is typed next isn't a number. */
+function setLevel(el, mm) {
+  el.dataset.mm = String(mm);
+  el.value = String(mm);
+}
+
+/**
+ * Wires a level input: on a change it is tidied to the mm it reads as, or put
+ * back to its last good value when it isn't a number, then onChange runs.
+ */
+function levelInput(el, onChange) {
+  setLevel(el, levelOf(el));
+  el.addEventListener('change', () => {
+    const mm = el.validity.badInput ? null : core.parseLevelMm(el.value);
+    setLevel(el, mm ?? Number(el.dataset.mm));
+    onChange();
+  });
+}
+
+/** "Raised 0.8 mm", "Sunk 0.6 mm" or "Left out", for the table and the hints. */
 function levelText(mm) {
   return mm > 0 ? `Raised ${mm} mm` : mm < 0 ? `Sunk ${-mm} mm` : 'Left out';
 }
 
-/** The shoreline select's value, "groove-0.4" or "ridge-0.8" or "0", as settings. */
-function shoreSetting(value) {
-  const [style, size] = value.split('-');
-  return { shoreMm: Number(size) || 0, shoreRidge: style === 'ridge' };
+/** The shoreline's level, a ridge if positive and a groove if negative, as settings. */
+function shoreSetting(mm) {
+  return { shoreMm: Math.abs(mm), shoreRidge: mm > 0 };
 }
 
 function setPrintCentre(place, fit = true) {
@@ -1447,7 +1470,7 @@ function labelPitches() {
 labelPitches();
 // The width sets the corner radius against the outline, so the map's outline follows it.
 $('print-width').addEventListener('change', () => { labelPitches(); showShapeControls(); drawPrintSquare(false); buildModel(); });
-$('print-shore').addEventListener('change', () => { $('print-shore-hint').hidden = $('print-shore').value === '0'; buildModel(); });
+levelInput($('print-shore'), () => { $('print-shore-hint').hidden = !levelOf($('print-shore')); buildModel(); });
 $('print-label').addEventListener('change', () => { showLabelControls(); buildModel(); });
 $('print-text').addEventListener('input', showLabelControls);
 $('print-text').addEventListener('change', buildModel);
@@ -1508,11 +1531,9 @@ function showBuildingControls() {
 }
 $('print-buildings').addEventListener('change', () => { showBuildingControls(); buildModel(); });
 showBuildingControls();
-// Every level select offers the same levels, starting at its own default.
-for (const el of document.querySelectorAll('select.level')) {
-  el.replaceChildren(...core.LEVELS_MM.map((mm) => new Option(levelText(mm), String(mm))));
-  el.value = el.dataset.level;
-  el.addEventListener('change', () => { showRoadControls(); showWaterControls(); buildModel(); });
+// Each road class and kind of water takes its level in mm, starting at its own default.
+for (const el of document.querySelectorAll('#print-road-levels input.level, #print-water-levels input.level')) {
+  levelInput(el, () => { showRoadControls(); showWaterControls(); buildModel(); });
 }
 function showRoadControls() {
   const sideKm = Number($('print-side').value);
@@ -1529,8 +1550,8 @@ function showRoadControls() {
     : `Motorways, trunk and primary roads are ${c.motorway.widthMm}, ${c.trunk.widthMm} and ${c.primary.widthMm} mm wide`;
   $('print-roads-hint').textContent = !fits
     ? `Roads need a print of ${core.ROADS_MAX_KM} km or less across, so this one has none.`
-    : !raised && !sunk ? 'Every class is left out, so the print has no roads.'
-    : [`${widths}, each class at its own level over or under the ground along it, smoothed so it reads as graded.`,
+    : !raised && !sunk ? 'Every class is at 0, so the print has no roads. A positive level in mm raises a class, a negative one sinks it.'
+    : [`Each level is in mm: positive raises, negative sinks, 0 leaves the class out. ${widths}, each class at its own level over or under the ground along it, smoothed so it reads as graded.`,
       secondaryWanted && !secondaryFits && `Secondary roads need a print of ${core.SECONDARY_ROADS_MAX_KM} km or less across, so this one has the main roads alone.`,
       raised && 'A raised road is its own solid standing on the ground.',
       sunk && 'A sunk road is a groove cut into the ground, which leaves the water it crosses alone.',
@@ -1547,8 +1568,9 @@ function showWaterControls() {
   const how = (mm) => (mm > 0 ? `raised ${mm} mm over` : `sunk ${-mm} mm under`);
   $('print-water-hint').textContent = !fits
     ? `Lakes and rivers need a print of ${core.WATER_MAX_KM} km or less across, so this one has none.`
-    : !core.anyLevel(level) ? 'Every kind is left out, so the print has no water.'
-    : [level.lakes && `Lakes, ponds and reservoirs are ${how(level.lakes)} the lowest water near each point, so each prints as one flat level.`,
+    : !core.anyLevel(level) ? 'Every kind is at 0, so the print has no water. A positive level in mm raises a kind, a negative one sinks it.'
+    : ['Each level is in mm: positive raises, negative sinks, 0 leaves the kind out.',
+      level.lakes && `Lakes, ponds and reservoirs are ${how(level.lakes)} the lowest water near each point, so each prints as one flat level.`,
       level.wide && `Rivers and canals mapped as areas are ${how(level.wide)} the lowest water near each point, so they step down their valleys.`,
       (level.lakes || level.wide) && `Islands stay land, and water under ${core.WATER_MIN_MM2} mm² on the model is left out.`,
       level.narrow && `Rivers mapped only as lines are ${level.narrow > 0 ? 'ridges' : 'channels'} at least ${core.RIVER_WIDTH_MM} mm wide, ${how(level.narrow)} the lowest ground upstream, so they never climb.`,
@@ -1567,13 +1589,11 @@ function renderTracks() {
     const li = document.createElement('li');
     li.innerHTML = `<span class="swatch" style="background:${core.TRACK_COLOUR}"></span>
       <span class="name" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</span><span class="coords">${trackLength(core.trackKm(t))}</span>
-      <select aria-label="Level of ${escapeHtml(t.name)}"></select>
+      <input class="level" type="number" step="0.1" min="-${core.LEVEL_MAX_MM}" max="${core.LEVEL_MAX_MM}" aria-label="Level of ${escapeHtml(t.name)}, mm" title="mm: positive raises, negative sinks, 0 leaves it out">
       <button type="button" aria-label="Remove ${escapeHtml(t.name)}" title="Remove from the model">×</button>`;
-    const level = li.querySelector('select');
-    level.replaceChildren(...core.LEVELS_MM.map((mm) => new Option(levelText(mm), String(mm))));
-    if (!core.LEVELS_MM.includes(t.levelMm)) level.append(new Option(levelText(t.levelMm), String(t.levelMm)));
+    const level = li.querySelector('input');
     level.value = String(t.levelMm);
-    level.addEventListener('change', () => { t.levelMm = Number(level.value); tracksChanged(); });
+    levelInput(level, () => { t.levelMm = levelOf(level); tracksChanged(); });
     li.querySelector('button').addEventListener('click', () => {
       state.tracks = state.tracks.filter((x) => x !== t);
       tracksChanged();
@@ -1583,8 +1603,8 @@ function renderTracks() {
   const printed = state.tracks.filter((t) => t.levelMm);
   $('print-tracks-hint').textContent = !state.tracks.length
     ? 'Lines from a KML file (a hike, a ride, a route drawn in Google Earth) printed on the ground, each raised or sunk by its own amount.'
-    : !printed.length ? 'Every track is left out, so the print has none. Left out, a track is dashed on the map.'
-    : `Each track is ${core.TRACK_WIDTH_MM} mm wide, at its level over or under the ground along it, smoothed so it reads as graded. `
+    : !printed.length ? 'Every track is at 0, so the print has none. Left out, a track is dashed on the map.'
+    : `Each track's level is in mm: positive raises, negative sinks, 0 leaves it out. Each track is ${core.TRACK_WIDTH_MM} mm wide, at its level over or under the ground along it, smoothed so it reads as graded. `
       + 'A raised track is its own solid standing on the ground; a sunk one is a groove, which leaves the water it crosses alone. The heights in the file are not used.';
 }
 function trackLength(km) {
@@ -2028,11 +2048,7 @@ $('print-file').addEventListener('change', async () => {
   if (set.depthStretch > Number(depth.max)) depth.max = String(set.depthStretch);
   depth.value = String(set.depthStretch);
   showSeaControls();
-  const shoreValue = set.shoreMm ? `${set.shoreRidge ? 'ridge' : 'groove'}-${set.shoreMm}` : '0';
-  if (![...$('print-shore').options].some((o) => o.value === shoreValue)) {
-    $('print-shore').append(new Option(set.shoreRidge ? `Ridge ${set.shoreMm} mm high` : `Groove ${set.shoreMm} mm deep`, shoreValue));
-  }
-  $('print-shore').value = shoreValue;
+  setLevel($('print-shore'), set.shoreRidge ? set.shoreMm : -set.shoreMm || 0);
   $('print-shore-hint').hidden = set.shoreMm === 0;
   $('print-text').value = set.labelText;
   $('print-label').value = set.labelText.trim() ? (set.label ? 'both' : 'text') : set.label ? 'on' : 'none';
@@ -2048,13 +2064,13 @@ $('print-file').addEventListener('change', async () => {
   $('print-buildings').value = set.buildings ? 'osm' : 'none';
   choose('print-default', set.buildingDefaultM, core.formatHeight(set.buildingDefaultM, state.units));
   showBuildingControls();
-  // a file with every class or kind left out keeps the selects at their defaults
+  // a file with every class or kind left out keeps the inputs at their defaults
   $('print-roads').value = !core.anyLevel(set.roadMm) ? 'none' : set.roadMm.secondary ? 'secondary' : 'osm';
-  // a file without secondary roads leaves their select at its default, ready for when they're asked for
-  if (core.anyLevel(set.roadMm)) for (const [cls, mm] of Object.entries(set.roadMm)) if (mm || cls !== 'secondary') choose(`print-road-${cls}`, mm, levelText(mm));
+  // a file without secondary roads leaves their input at its default, ready for when they're asked for
+  if (core.anyLevel(set.roadMm)) for (const [cls, mm] of Object.entries(set.roadMm)) if (mm || cls !== 'secondary') setLevel($(`print-road-${cls}`), mm);
   showRoadControls();
   $('print-water').value = core.anyLevel(set.waterMm) ? 'osm' : 'none';
-  if (core.anyLevel(set.waterMm)) for (const [kind, mm] of Object.entries(set.waterMm)) choose(`print-water-${kind}`, mm, levelText(mm));
+  if (core.anyLevel(set.waterMm)) for (const [kind, mm] of Object.entries(set.waterMm)) setLevel($(`print-water-${kind}`), mm);
   showWaterControls();
   // the file's tracks take the place of the ones imported here, so the model is the file's
   state.tracks = set.tracks.map((t) => ({ ...t, id: nextTrack++ }));
