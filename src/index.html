@@ -316,20 +316,20 @@
         </div>
         <div id="print-road-levels" class="row" hidden>
           <div class="field">
-            <label for="print-road-motorway">Motorways</label>
-            <select id="print-road-motorway" class="level" data-level="1.2"></select>
+            <label for="print-road-motorway">Motorways, mm</label>
+            <input id="print-road-motorway" class="level" type="number" step="0.1" min="-10" max="10" value="1.2" title="mm: positive raises, negative sinks, 0 leaves it out">
           </div>
           <div class="field">
-            <label for="print-road-trunk">Trunk roads</label>
-            <select id="print-road-trunk" class="level" data-level="0.8"></select>
+            <label for="print-road-trunk">Trunk roads, mm</label>
+            <input id="print-road-trunk" class="level" type="number" step="0.1" min="-10" max="10" value="0.8" title="mm: positive raises, negative sinks, 0 leaves it out">
           </div>
           <div class="field">
-            <label for="print-road-primary">Primary roads</label>
-            <select id="print-road-primary" class="level" data-level="0.4"></select>
+            <label for="print-road-primary">Primary roads, mm</label>
+            <input id="print-road-primary" class="level" type="number" step="0.1" min="-10" max="10" value="0.4" title="mm: positive raises, negative sinks, 0 leaves it out">
           </div>
           <div id="print-road-secondary-field" class="field">
-            <label for="print-road-secondary">Secondary roads</label>
-            <select id="print-road-secondary" class="level" data-level="0.4"></select>
+            <label for="print-road-secondary">Secondary roads, mm</label>
+            <input id="print-road-secondary" class="level" type="number" step="0.1" min="-10" max="10" value="0.4" title="mm: positive raises, negative sinks, 0 leaves it out">
           </div>
         </div>
         <p id="print-roads-hint" class="hint" hidden></p>
@@ -344,16 +344,16 @@
         </div>
         <div id="print-water-levels" class="row" hidden>
           <div class="field">
-            <label for="print-water-lakes">Lakes</label>
-            <select id="print-water-lakes" class="level" data-level="-0.6"></select>
+            <label for="print-water-lakes">Lakes, mm</label>
+            <input id="print-water-lakes" class="level" type="number" step="0.1" min="-10" max="10" value="-0.6" title="mm: positive raises, negative sinks, 0 leaves it out">
           </div>
           <div class="field">
-            <label for="print-water-wide">Wide rivers</label>
-            <select id="print-water-wide" class="level" data-level="-0.6"></select>
+            <label for="print-water-wide">Wide rivers, mm</label>
+            <input id="print-water-wide" class="level" type="number" step="0.1" min="-10" max="10" value="-0.6" title="mm: positive raises, negative sinks, 0 leaves it out">
           </div>
           <div class="field">
-            <label for="print-water-narrow">Narrow rivers</label>
-            <select id="print-water-narrow" class="level" data-level="-0.6"></select>
+            <label for="print-water-narrow">Narrow rivers, mm</label>
+            <input id="print-water-narrow" class="level" type="number" step="0.1" min="-10" max="10" value="-0.6" title="mm: positive raises, negative sinks, 0 leaves it out">
           </div>
         </div>
         <p id="print-water-hint" class="hint" hidden></p>
@@ -368,17 +368,11 @@
         <p id="print-tracks-hint" class="hint"></p>
         <div class="row">
           <div class="field">
-            <label for="print-shore">Shoreline</label>
-            <select id="print-shore">
-              <option value="0" selected>No line</option>
-              <option value="groove-0.4">Groove 0.4 mm deep</option>
-              <option value="groove-0.8">Groove 0.8 mm deep</option>
-              <option value="ridge-0.4">Ridge 0.4 mm high</option>
-              <option value="ridge-0.8">Ridge 0.8 mm high</option>
-            </select>
+            <label for="print-shore">Shoreline, mm</label>
+            <input id="print-shore" class="level" type="number" step="0.1" min="-10" max="10" value="0" title="mm: positive is a ridge, negative a groove, 0 no line">
           </div>
         </div>
-        <p id="print-shore-hint" class="hint" hidden>The line runs along the land's edge, one grid point wide, so a finer detail draws a finer line. It follows the coast, not lakeshores, which the tiles hold as flat land.</p>
+        <p id="print-shore-hint" class="hint" hidden>A positive level in mm is a ridge that high, a negative one a groove that deep. The line runs along the land's edge, one grid point wide, so a finer detail draws a finer line. It follows the coast, not lakeshores, which the tiles hold as flat land.</p>
         <div class="row">
           <div class="field">
             <label for="print-label">Label underneath</label>

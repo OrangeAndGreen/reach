@@ -2333,10 +2333,24 @@ export const SECONDARY_ROADS_MAX_KM = 25;
 /** A road's top follows the ground averaged over this far either way along it (mm on the model), so it reads as graded. */
 export const ROAD_SMOOTH_MM = 1.5;
 /**
- * The levels a road class or kind of water can print at, in mm on the model:
- * up for raised, down (negative) for sunk, 0 for left out.
+ * How far a road class, kind of water, track or shoreline can be raised or
+ * sunk, in mm on the model either way.
  */
-export const LEVELS_MM = [0, 0.4, 0.6, 0.8, 1.2, 1.6, 2, -0.4, -0.6, -0.8, -1.2, -1.6, -2];
+export const LEVEL_MAX_MM = 10;
+
+/**
+ * A level typed in, as mm on the model: positive raises, negative sinks, 0
+ * (or nothing typed) leaves it out. "+1.2", "-0.6 mm" and "-0,6" all read;
+ * it is held to LEVEL_MAX_MM either way and to 0.01 mm. null when the text
+ * isn't a number.
+ */
+export function parseLevelMm(text) {
+  const t = String(text ?? '').trim().replace(/\s*mm$/i, '').replace(',', '.').replace(/^−/, '-');
+  if (!t) return 0;
+  if (!/^[+-]?(\d+\.?\d*|\.\d+)$/.test(t)) return null;
+  const mm = Math.max(-LEVEL_MAX_MM, Math.min(LEVEL_MAX_MM, Math.round(Number(t) * 100) / 100));
+  return mm || 0; // never -0
+}
 /** Each road class's level by default (raised), and no roads at all. */
 export const ROAD_LEVELS = Object.fromEntries(Object.entries(ROAD_CLASSES).map(([cls, c]) => [cls, c.liftMm]));
 export const NO_ROADS = Object.fromEntries(Object.keys(ROAD_CLASSES).map((cls) => [cls, 0]));

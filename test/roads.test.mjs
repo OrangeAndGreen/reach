@@ -178,3 +178,22 @@ test('a KML from before secondary roads has none, and one with them keeps their 
   const before = kml.replace(/ *<Data name="secondaryMm">[\s\S]*?<\/Data>\n/, '');
   assert.deepEqual(core.parsePrintKml(before).set.roadMm, { ...core.ROAD_LEVELS, secondary: 0 });
 });
+
+test('a level typed in reads as signed mm: positive raises, negative sinks, blank leaves out', () => {
+  assert.equal(core.parseLevelMm('1.2'), 1.2);
+  assert.equal(core.parseLevelMm('+0.8'), 0.8);
+  assert.equal(core.parseLevelMm('-0.6'), -0.6);
+  assert.equal(core.parseLevelMm(' -0.6 mm '), -0.6);
+  assert.equal(core.parseLevelMm('−1'), -1);
+  assert.equal(core.parseLevelMm('-0,4'), -0.4);
+  assert.equal(core.parseLevelMm('.5'), 0.5);
+  assert.equal(core.parseLevelMm(''), 0);
+  assert.equal(core.parseLevelMm('-0'), 0);
+  assert.ok(Object.is(core.parseLevelMm('-0'), 0));
+  assert.equal(core.parseLevelMm('0.123'), 0.12);
+  assert.equal(core.parseLevelMm('25'), core.LEVEL_MAX_MM);
+  assert.equal(core.parseLevelMm('-25'), -core.LEVEL_MAX_MM);
+  assert.equal(core.parseLevelMm('abc'), null);
+  assert.equal(core.parseLevelMm('1-2'), null);
+  assert.equal(core.parseLevelMm('-'), null);
+});
