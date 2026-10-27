@@ -26,7 +26,7 @@ Three tools on one map:
   which grows with the square root of how flat it is (Mt Washington's 20 km
   ×1.5, Boston's ×6, at most ×20), with a button to use it. The default is the 20 km around Mt Washington:
   120 × 120 × 17.6 mm at ×1.5. **Download KML** saves the outline for Google
-  Earth along with every setting (centre, size, width, detail, stretch, base, sea floor, shoreline, label and its text, corners, shape, turn, each track printed, as its own line with its level, and each bin, as a pin at its centre)
+  Earth along with every setting (centre, size, width, detail, stretch, base, sea floor, shoreline, label and its text, corners, shape, turn, each track printed, as its own line with its level, and each bin, as a pin at its centre with its ring or grid)
   and what came of them (tile zoom, metres per pixel, lowest and highest point,
   model height, scale, triangle count, STL file name). A KML from before the per-class levels opens with its roads raised as they were and its water all sunk its one depth. **Open KML** reads one
   back and builds the same STL again. **Download map image** saves the map
@@ -36,7 +36,12 @@ Three tools on one map:
   into the top to stand things in, such as SD cards, AA or 18650 batteries,
   so each stands part way out and is easy to grab. Pick a thing (or type your
   own size), and a bin is its footprint plus a clearance (0.4 mm), as a
-  rectangle, a circle or an oval (length by width), turned any way. The depth is measured down from the
+  rectangle, a circle or an oval (length by width), turned any way. A bin can
+  repeat as a ring (how many, the radius, and each turned toward the centre,
+  along the ring or all the same way; the radius follows a suggestion that
+  keeps them apart until you type your own) or a grid (across, down and the
+  gap), all on one card, the pattern moved by its centre and turned whole;
+  Split makes each of its bins a card of its own. The depth is measured down from the
   lowest, average or highest ground under the bin, so on a slope it can be
   deep everywhere or open on its low side. The floor is flat and the walls
   upright, and the base grows when a floor would leave less than 1.5 mm under

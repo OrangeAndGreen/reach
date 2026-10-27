@@ -1007,7 +1007,7 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
   const mid = acrossMm / 2;
   const binPlacemarks = (set.bins || []).map((bin) => {
     const g = frame.toLonLat(mid + bin.x, mid + bin.y);
-    const fields = { binName: bin.name, binShape: bin.shape, binLengthMm: bin.lengthMm, binWidthMm: bin.widthMm, binDepthMm: bin.depthMm, binFrom: bin.from, binXMm: bin.x, binYMm: bin.y, binTurnDeg: bin.turn };
+    const fields = { binName: bin.name, binShape: bin.shape, binLengthMm: bin.lengthMm, binWidthMm: bin.widthMm, binDepthMm: bin.depthMm, binFrom: bin.from, binXMm: bin.x, binYMm: bin.y, binTurnDeg: bin.turn, ...binPatternFields(bin) };
     const data = Object.entries(fields).map(([k, v]) => `<Data name="${k}"><value>${escapeXml(v)}</value></Data>`).join('');
     return `  <Placemark><name>${escapeXml(`Bin: ${bin.name}`)}</name><ExtendedData>${data}</ExtendedData><Point><coordinates>${g.lon},${g.lat},0</coordinates></Point></Placemark>
 `;
@@ -1119,6 +1119,13 @@ export function parsePrintKml(text) {
   };
 }
 
+/** A ring's or grid's own settings, as a bin's placemark keeps them. */
+function binPatternFields(bin) {
+  if (bin.pattern === 'ring') return { binPattern: 'ring', binCount: bin.count, binRadiusMm: bin.radiusMm, binFacing: bin.facing };
+  if (bin.pattern === 'grid') return { binPattern: 'grid', binCols: bin.cols, binRows: bin.rows, binGapMm: bin.gapMm };
+  return {};
+}
+
 /** The bins in a print's KML, one placemark each. */
 function parseBins(text) {
   const bins = [];
@@ -1137,6 +1144,9 @@ function parseBins(text) {
       lengthMm: num('binLengthMm', 0.1, 1000), widthMm: num('binWidthMm', 0.1, 1000), depthMm: num('binDepthMm', 0.1, 500),
       from: BIN_FROM[v.binFrom] ? v.binFrom : 'low',
       x: num('binXMm', -2000, 2000), y: num('binYMm', -2000, 2000), turn: num('binTurnDeg', -360, 360),
+      // a bin from before patterns, or just one, has none of these
+      ...(v.binPattern === 'ring' ? { pattern: 'ring', count: num('binCount', 2, BIN_COUNT_MAX), radiusMm: num('binRadiusMm', 0.5, 2000), facing: BIN_FACING[v.binFacing] ? v.binFacing : 'centre' } : {}),
+      ...(v.binPattern === 'grid' ? { pattern: 'grid', cols: num('binCols', 1, BIN_COUNT_MAX), rows: num('binRows', 1, BIN_COUNT_MAX), gapMm: num('binGapMm', 0, 100) } : {}),
     });
   }
   return bins;
@@ -2178,6 +2188,62 @@ export function binRing(bin, { origin, step, clearanceMm = BIN_CLEARANCE_MM, gro
     return Array.from({ length: parts }, (_, k) => place([a * Math.cos((2 * Math.PI * k) / parts), b * Math.sin((2 * Math.PI * k) / parts)]));
   }
   return densify([[-a, -b], [a, -b], [a, b], [-a, b]].map(place), step);
+}
+
+/** How a bin repeats: once, round a ring, or in rows and columns. */
+export const BIN_PATTERNS = { one: 'Just one', ring: 'In a ring', grid: 'In a grid' };
+/** Which way each bin in a ring is turned. */
+export const BIN_FACING = { centre: 'Toward the centre', along: 'Along the ring', same: 'All the same way' };
+/** The most bins in a ring, or along a grid's rows or columns. */
+export const BIN_COUNT_MAX = 60;
+/** The gap left between neighbours in a new ring or grid. */
+export const BIN_GAP_MM = 3;
+
+/**
+ * The bins a bin's pattern makes, each a copy of it with its own x, y and
+ * turn. A ring puts count copies radiusMm from the bin's x and y, the first
+ * straight up and the rest clockwise, each turned toward the centre, along
+ * the ring or all the same way (facing). A grid puts cols by rows copies
+ * gapMm apart, the thing's length across and its width down. The bin's turn
+ * turns the whole pattern about its centre.
+ */
+export function binCopies(bin, clearanceMm = BIN_CLEARANCE_MM) {
+  const turn = bin.turn || 0;
+  if (bin.pattern === 'ring') {
+    return Array.from({ length: bin.count }, (_, k) => {
+      const at = turn + (360 * k) / bin.count, a = (at * Math.PI) / 180;
+      const own = bin.facing === 'same' ? turn : bin.facing === 'along' ? at : at + 90;
+      return { ...bin, x: bin.x + bin.radiusMm * Math.sin(a), y: bin.y + bin.radiusMm * Math.cos(a), turn: own };
+    });
+  }
+  if (bin.pattern === 'grid') {
+    const t = (-turn * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+    const across = bin.lengthMm + clearanceMm + bin.gapMm;
+    const down = (bin.shape === 'circle' ? bin.lengthMm : bin.widthMm) + clearanceMm + bin.gapMm;
+    const copies = [];
+    for (let j = 0; j < bin.rows; j++) {
+      for (let i = 0; i < bin.cols; i++) {
+        const u = (i - (bin.cols - 1) / 2) * across, v = ((bin.rows - 1) / 2 - j) * down;
+        copies.push({ ...bin, x: bin.x + u * c - v * s, y: bin.y + u * s + v * c, turn });
+      }
+    }
+    return copies;
+  }
+  return [bin];
+}
+
+/**
+ * The least radius, to the half millimetre, at which a ring of count bins
+ * leaves gapMm between neighbours, measured where they come closest (their
+ * inner corners).
+ */
+export function ringRadius(bin, count, clearanceMm = BIN_CLEARANCE_MM, gapMm = BIN_GAP_MM) {
+  const long = bin.lengthMm + clearanceMm, short = (bin.shape === 'circle' ? bin.lengthMm : bin.widthMm) + clearanceMm;
+  // turned every way, all that can be counted on is the diagonal
+  const any = bin.shape === 'circle' ? long : Math.hypot(long, short);
+  const [side, out] = bin.facing === 'centre' ? [short, long] : bin.facing === 'along' ? [long, short] : [any, any];
+  const r = (side + gapMm) / (2 * Math.sin(Math.PI / count)) + out / 2;
+  return Math.ceil(r * 2 - 1e-9) / 2;
 }
 
 /** Whether two convex rings are apart, by a gap along one of their sides' normals. */

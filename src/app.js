@@ -1024,6 +1024,11 @@ function endDrag() {
 // ---------- bins on the map ----------
 // Each bin is outlined where it sits on the print, with a dot to drag it by.
 
+/** Every bin to cut: each card's copies (one, unless it is a ring or grid), with an id each and the card's as group. */
+function binCuts(set) {
+  return set.bins.flatMap((b) => core.binCopies(b, set.binClearMm).map((c, k) => ({ ...c, id: `${b.id}.${k}`, group: b.id })));
+}
+
 /** Where a set's centre sits on its frame, and the frame: bins are placed from there. */
 function binFrame(set, centre) {
   const plan = core.piecePlan(centre, set);
@@ -1034,11 +1039,14 @@ function drawBins(set, centre) {
   const { frame, mid } = binFrame(set, centre);
   const at = ([x, y]) => { const p = frame.toLonLat(x, y); return [p.lat, p.lon]; };
   const left = state.model?.bins;
-  for (const bin of state.bins) {
-    const ring = core.binRing(bin, { origin: [mid, mid], step: 1, clearanceMm: set.binClearMm }).map(at);
-    const out = left?.get(bin.id)?.why != null;
+  for (const cut of binCuts({ ...set, bins: state.bins })) {
+    const ring = core.binRing(cut, { origin: [mid, mid], step: 1, clearanceMm: set.binClearMm }).map(at);
+    const out = left?.get(cut.id)?.why != null;
     L.polygon(ring, { color: '#ffffff', weight: 4, opacity: 0.9, fill: false, interactive: false }).addTo(printLayer);
     L.polygon(ring, { color: core.BIN_COLOUR, weight: 2, dashArray: out ? '3 4' : null, fill: true, fillOpacity: 0.25, interactive: false }).addTo(printLayer);
+  }
+  // a ring or grid moves as one, by the dot at its centre
+  for (const bin of state.bins) {
     const dot = at([mid + bin.x, mid + bin.y]);
     L.circleMarker(dot, { radius: 4, color: '#fff', weight: 1.5, fillColor: core.BIN_COLOUR, fillOpacity: 1, interactive: false }).addTo(printLayer);
     const grip = L.circleMarker(dot, { radius: 12, opacity: 0, fillOpacity: 0, className: 'print-grip print-dot' }).addTo(printLayer);
@@ -1329,7 +1337,7 @@ async function buildModel() {
     const step = set.widthMm / (n - 1);
     const fitBins = (piece, groundMm) => {
       const mid = plan.acrossMm / 2, origin = [mid - piece.x0, mid - piece.y0];
-      const mine = set.bins.filter((b) => [origin[0] + b.x, origin[1] + b.y].every((v) => v >= 0 && v <= set.widthMm));
+      const mine = binCuts(set).filter((b) => [origin[0] + b.x, origin[1] + b.y].every((v) => v >= 0 && v <= set.widthMm));
       const ring = (bin, growMm = 0) => core.binRing(bin, { origin, step, clearanceMm: set.binClearMm, growMm });
       const rings = mine.map((bin) => ring(bin));
       const fit = core.binCells(rings, n, set.widthMm, { base: cut?.cells, cornerMm: cut ? 0 : set.cornerMm, corners: split ? piece.corners : null });
@@ -1533,7 +1541,7 @@ function sumTracks(pieces) {
  */
 function sumBins(pieces, set) {
   if (!set.bins.length) return null;
-  const each = new Map(set.bins.map((b) => [b.id, { why: 'outside' }]));
+  const each = new Map(binCuts(set).map((b) => [b.id, { why: 'outside' }]));
   for (const p of pieces) {
     if (!p.bins) continue;
     for (const l of p.bins.left) each.set(l.id, { why: l.why, other: l.other, piece: p.name });
@@ -1825,7 +1833,7 @@ $('print-bin-preset').append(
 function freeSpot(bin) {
   const set = printSettings(), across = set.widthMm * set.cols, down = set.widthMm * set.rows;
   const grown = (b) => core.binRing(b, { origin: [0, 0], step: 2, clearanceMm: set.binClearMm, growMm: 1.5 });
-  const others = state.bins.map(grown);
+  const others = binCuts({ ...set, bins: state.bins }).map(grown);
   const spots = [];
   for (let y = -down / 2; y <= down / 2; y += 2) for (let x = -across / 2; x <= across / 2; x += 2) spots.push([x, y]);
   spots.sort((a, b) => Math.hypot(...a) - Math.hypot(...b));
@@ -1866,6 +1874,74 @@ const BIN_FIELDS = [
   ['y', 'Up, mm', 0.5, -2000, 2000],
   ['turn', 'Turn, °', 1, -180, 180],
 ];
+/** A ring's or grid's number fields, as BIN_FIELDS, with the pattern they show for. */
+const PATTERN_FIELDS = [
+  ['count', 'How many', 1, 2, core.BIN_COUNT_MAX, 'ring'],
+  ['radiusMm', 'Radius, mm', 0.5, 0.5, 2000, 'ring'],
+  ['cols', 'Across', 1, 1, core.BIN_COUNT_MAX, 'grid'],
+  ['rows', 'Down', 1, 1, core.BIN_COUNT_MAX, 'grid'],
+  ['gapMm', 'Gap, mm', 0.5, 0, 100, 'grid'],
+];
+const BIN_WHY_SOME = { outside: 'off the print', edge: 'too near the edge', corner: 'in a rounded corner' };
+
+/** A ring's radius follows this, as its count, size or facing change, until another is typed. */
+const suggestedRadius = (bin) => core.ringRadius(bin, bin.count, binClearance());
+
+/** Starts a ring or grid with room for its bins, keeping what it had if it was one before. */
+function startPattern(bin) {
+  if (bin.pattern === 'ring') {
+    bin.count ??= 8;
+    bin.facing ??= 'centre';
+    bin.radiusMm ??= suggestedRadius(bin);
+  } else if (bin.pattern === 'grid') {
+    bin.cols ??= 3;
+    bin.rows ??= 2;
+    bin.gapMm ??= core.BIN_GAP_MM;
+  }
+}
+
+/** Each bin of a ring or grid as a card of its own, where it was. */
+function splitBin(bin) {
+  const round = (v) => Math.round(v * 100) / 100;
+  const { pattern, count, radiusMm, facing, cols, rows, gapMm, ...one } = bin;
+  return core.binCopies(bin, binClearance()).map((c, k) => ({
+    ...one, id: nextBin++, name: `${bin.name} ${k + 1}`,
+    x: round(c.x), y: round(c.y), turn: round(((((c.turn + 180) % 360) + 360) % 360) - 180),
+  }));
+}
+
+/** What a card says of its bins: why any are left out, or which stand open. */
+function binWhy(bin, results) {
+  if (!results) return '';
+  const copies = core.binCopies(bin, binClearance()).map((_, k) => results.get(`${bin.id}.${k}`)).filter(Boolean);
+  const groupOf = (id) => state.bins.find((b) => String(b.id) === String(id).split('.')[0]);
+  if (copies.length === 1) {
+    const [result] = copies;
+    const other = result.other != null ? groupOf(result.other) : null;
+    return result.why === 'overlap' ? `Overlaps ${other ? other.name : 'another bin'}, so it is left out.`
+      : result.why ? BIN_WHY[result.why]
+      : result.open ? 'The ground dips under its floor on the low side, so that side stands open.' : '';
+  }
+  const left = copies.filter((r) => r.why);
+  if (!left.length) {
+    const open = copies.filter((r) => r.open).length;
+    return !open ? '' : `The ground dips under the floor of ${open} of them on the low side, so ${open === 1 ? 'that side stands' : 'those sides stand'} open.`;
+  }
+  // counted by reason, in the order they come up
+  const why = new Map();
+  let crowded = false;
+  for (const r of left) {
+    let key = BIN_WHY_SOME[r.why];
+    if (r.why === 'overlap') {
+      const other = groupOf(r.other);
+      crowded ||= other === bin;
+      key = other === bin ? 'over each other' : `over ${other ? other.name : 'another bin'}`;
+    }
+    why.set(key, (why.get(key) || 0) + 1);
+  }
+  const fix = !crowded ? '' : bin.pattern === 'ring' ? ` A radius of ${suggestedRadius(bin)} mm keeps them apart.` : ' A wider gap keeps them apart.';
+  return `${left.length} of ${copies.length} are left out: ${[...why].map(([k, v]) => `${v} ${k}`).join(', ')}.${fix}`;
+}
 
 function renderBins() {
   const ul = $('print-bins');
@@ -1874,55 +1950,76 @@ function renderBins() {
   const results = state.model?.bins;
   for (const bin of state.bins) {
     const li = document.createElement('li');
-    const fields = BIN_FIELDS.map(([k, label, step, min, max]) => `<label data-k="${k}"><span>${label}</span><input type="number" step="${step}" min="${min}" max="${max}" data-k="${k}"></label>`);
+    const field = ([k, label, step, min, max, show]) => `<label data-k="${k}"${show ? ` data-show="${show}"` : ''}><span>${label}</span><input type="number" step="${step}" min="${min}" max="${max}" data-k="${k}"></label>`;
+    const fields = BIN_FIELDS.map(field);
+    const options = (o) => Object.entries(o).map(([k, v]) => `<option value="${k}">${v}</option>`).join('');
     li.innerHTML = `<div class="head"><span class="swatch" style="background:${core.BIN_COLOUR}"></span>
-        <input class="name" aria-label="Bin name" maxlength="40"><button type="button" aria-label="Remove this bin" title="Remove the bin">×</button></div>
+        <input class="name" aria-label="Bin name" maxlength="40"><button type="button" class="split" title="Make each bin of the ring or grid a card of its own, to move or change alone">Split</button><button type="button" class="remove" aria-label="Remove this bin" title="Remove the bin">×</button></div>
       <div class="grid">
         <label><span>Shape</span><select data-k="shape"><option value="rect">Rectangle</option><option value="circle">Circle</option><option value="oval">Oval</option></select></label>
         ${fields.slice(0, 3).join('')}
         <label><span>Depth from</span><select data-k="from">${Object.entries(core.BIN_FROM).map(([k, v]) => `<option value="${k}">${v.replace(' ground', '')}</option>`).join('')}</select></label>
         ${fields.slice(3).join('')}
+        <label><span>Repeat</span><select data-k="pattern">${options(core.BIN_PATTERNS)}</select></label>
+        ${PATTERN_FIELDS.slice(0, 2).map(field).join('')}
+        <label data-k="facing" data-show="ring"><span>Facing</span><select data-k="facing">${options(core.BIN_FACING)}</select></label>
+        ${PATTERN_FIELDS.slice(2).map(field).join('')}
       </div>
       <p class="why" hidden></p>`;
     const name = li.querySelector('.name');
     name.value = bin.name;
     name.addEventListener('change', () => { bin.name = name.value.trim() || 'Bin'; binsChanged(false); });
-    li.querySelector('.head button').addEventListener('click', () => {
+    li.querySelector('.head .remove').addEventListener('click', () => {
       state.bins = state.bins.filter((b) => b !== bin);
       binsChanged();
     });
+    li.querySelector('.head .split').addEventListener('click', () => {
+      state.bins.splice(state.bins.indexOf(bin), 1, ...splitBin(bin));
+      binsChanged();
+    });
+    // a ring's radius stays on the suggestion through a change, if it was on it
+    const change = (apply) => {
+      const follow = bin.pattern === 'ring' && bin.radiusMm === suggestedRadius(bin);
+      apply();
+      startPattern(bin);
+      if (follow && bin.pattern === 'ring') bin.radiusMm = suggestedRadius(bin);
+      binsChanged();
+    };
     for (const sel of li.querySelectorAll('select')) {
-      sel.value = bin[sel.dataset.k];
-      sel.addEventListener('change', () => {
+      sel.value = bin[sel.dataset.k] ?? 'one';
+      sel.addEventListener('change', () => change(() => {
         bin[sel.dataset.k] = sel.value;
         if (sel.dataset.k === 'shape' && sel.value === 'circle') bin.widthMm = bin.lengthMm;
-        binsChanged();
-      });
+      }));
     }
+    const shown = (k) => (bin[k] == null ? '' : String(bin[k]));
     for (const input of li.querySelectorAll('input[type="number"]')) {
       const k = input.dataset.k;
-      input.value = String(bin[k]);
+      input.value = shown(k);
       input.addEventListener('change', () => {
         const v = Number(input.value);
-        if (input.value.trim() === '' || !Number.isFinite(v) || v < Number(input.min) || v > Number(input.max)) {
-          input.value = String(bin[k]);
+        // counts are whole
+        const whole = input.step !== '1' || k === 'turn' || Number.isInteger(v);
+        if (input.value.trim() === '' || !Number.isFinite(v) || v < Number(input.min) || v > Number(input.max) || !whole) {
+          input.value = shown(k);
           return;
         }
-        bin[k] = v;
-        if (bin.shape === 'circle' && k === 'lengthMm') bin.widthMm = v;
-        binsChanged();
+        change(() => {
+          bin[k] = v;
+          if (bin.shape === 'circle' && k === 'lengthMm') bin.widthMm = v;
+        });
       });
     }
+    // a ring's or grid's own fields show only for it, as Split does
+    const pattern = bin.pattern || 'one';
+    for (const el of li.querySelectorAll('[data-show]')) el.hidden = el.dataset.show !== pattern;
+    if (bin.shape === 'circle') li.querySelector('label[data-k="facing"]').hidden = true;
+    li.querySelector('.head .split').hidden = pattern === 'one';
     // a circle has one size, its diameter
     const round = bin.shape === 'circle';
     li.querySelector('label[data-k="lengthMm"] span').textContent = round ? 'Diameter, mm' : 'Length, mm';
     li.querySelector('label[data-k="widthMm"]').hidden = round;
-    const result = results?.get(bin.id);
-    const other = result?.other != null ? state.bins.find((b) => b.id === result.other) : null;
-    const why = !result ? ''
-      : result.why === 'overlap' ? `Overlaps ${other ? other.name : 'another bin'}, so it is left out.`
-      : result.why ? BIN_WHY[result.why]
-      : result.open ? 'The ground dips under its floor on the low side, so that side stands open.' : '';
+    const why = binWhy(bin, results);
     const p = li.querySelector('.why');
     p.textContent = why;
     p.hidden = !why;
@@ -1930,7 +2027,7 @@ function renderBins() {
   }
   $('print-bins-hint').textContent = !state.bins.length
     ? 'Pick a thing and add a bin for it; it starts at the middle of the print, or as near as is free.'
-    : `Sizes are the thing's own: each bin adds the clearance to its length and width. The depth is how far the floor sits under the lowest, average or highest ground round it, so the rest of the thing stands clear. Right and up are mm from the print's centre on the model, and the turn is clockwise. Drag a bin's dot on the map to move it. Raised roads, tracks and buildings keep ${core.BIN_CLEAR_MM} mm clear of a bin, and the base grows if a floor would leave less than ${core.BIN_FLOOR_MM} mm under it.`;
+    : `Sizes are the thing's own: each bin adds the clearance to its length and width. The depth is how far the floor sits under the lowest, average or highest ground round it, so the rest of the thing stands clear. Right and up are mm from the print's centre on the model, and the turn is clockwise. Repeat makes a ring or a grid of the same bin: right, up and the turn are then its centre's, and turn it whole, a ring starts straight up from its centre, and Split makes each of its bins a card of its own. Drag a bin's dot on the map to move it. Raised roads, tracks and buildings keep ${core.BIN_CLEAR_MM} mm clear of a bin, and the base grows if a floor would leave less than ${core.BIN_FLOOR_MM} mm under it.`;
 }
 
 /** After a bin is added, changed or removed: kept, listed, drawn and the model rebuilt (unless only its name changed). */
