@@ -163,3 +163,67 @@ test('a print KML keeps each bin, as a pin at its centre', () => {
   assert.equal(core.parsePrintKml(old).set.binClearMm, core.BIN_CLEARANCE_MM);
   assert.throws(() => core.parsePrintKml(text.replace('<value>circle</value>', '<value>star</value>')), /AA battery/);
 });
+
+test('a ring of bins sits round its centre, each turned toward it, along it or all one way', () => {
+  const sd = { shape: 'rect', lengthMm: 24, widthMm: 2.1, depthMm: 16, from: 'low', x: 10, y: -5, turn: 0, pattern: 'ring', count: 8, radiusMm: 30, facing: 'centre' };
+  const ring = core.binCopies(sd);
+  assert.equal(ring.length, 8);
+  // the first straight up, the third a quarter round clockwise, to the right
+  near(ring[0].x, 10, 1e-9); near(ring[0].y, 25, 1e-9);
+  near(ring[2].x, 40, 1e-9); near(ring[2].y, -5, 1e-9);
+  for (const c of ring) near(Math.hypot(c.x - 10, c.y + 5), 30, 1e-9);
+  // toward the centre: the length points at it, so straight up it stands upright
+  assert.deepEqual(ring.map((c) => c.turn), [90, 135, 180, 225, 270, 315, 360, 405]);
+  assert.deepEqual(core.binCopies({ ...sd, facing: 'along' }).map((c) => c.turn), [0, 45, 90, 135, 180, 225, 270, 315]);
+  assert.ok(core.binCopies({ ...sd, facing: 'same', turn: 20 }).every((c) => c.turn === 20));
+  // the pattern's turn turns the whole ring: the first copy moves round with it
+  const turned = core.binCopies({ ...sd, turn: 90 });
+  near(turned[0].x, 40, 1e-9); near(turned[0].y, -5, 1e-9);
+  assert.equal(turned[0].turn, 180);
+  // the copies are the bin, in its other settings
+  assert.ok(ring.every((c) => c.depthMm === 16 && c.from === 'low' && c.shape === 'rect'));
+});
+
+test('a grid of bins is laid out gap apart, length across and width down, and turns as one', () => {
+  const aa = { shape: 'circle', lengthMm: 14.5, widthMm: 14.5, depthMm: 25, from: 'low', x: 0, y: 0, turn: 0, pattern: 'grid', cols: 3, rows: 2, gapMm: 3 };
+  const grid = core.binCopies(aa, 0.5);
+  assert.equal(grid.length, 6);
+  // 14.5 + 0.5 clearance + 3 gap = 18 apart, centred on the bin's own place, top row first
+  assert.deepEqual(grid.map((c) => [c.x, c.y]), [[-18, 9], [0, 9], [18, 9], [-18, -9], [0, -9], [18, -9]]);
+  const sd = { ...aa, shape: 'rect', lengthMm: 24, widthMm: 2.1, cols: 2, rows: 1, turn: 90 };
+  const turned = core.binCopies(sd, 0.4);
+  // turned 90° clockwise, the row runs down, and each copy keeps the grid's turn
+  near(turned[0].x, 0, 1e-9); near(turned[0].y, 13.7, 1e-9);
+  near(turned[1].x, 0, 1e-9); near(turned[1].y, -13.7, 1e-9);
+  assert.ok(turned.every((c) => c.turn === 90));
+  // just one is the bin itself
+  assert.deepEqual(core.binCopies({ ...aa, pattern: 'one' }), [{ ...aa, pattern: 'one' }]);
+  assert.equal(core.binCopies({ shape: 'rect', lengthMm: 5, widthMm: 5, x: 1, y: 2 }).length, 1);
+});
+
+test('a ring at its suggested radius keeps its bins apart, and a tighter one does not', () => {
+  for (const facing of Object.keys(core.BIN_FACING)) {
+    for (const count of [2, 3, 8, 20]) {
+      const bin = { shape: 'rect', lengthMm: 24, widthMm: 6, x: 0, y: 0, turn: 17, pattern: 'ring', count, facing };
+      const r = core.ringRadius(bin, count);
+      const rings = (radiusMm) => core.binCopies({ ...bin, radiusMm }).map((c) => core.binRing(c, { origin: [0, 0], step: 2 }));
+      const apart = (rs) => rs.every((p, k) => rs.slice(k + 1).every((q) => core.convexApart(p, q)));
+      assert.ok(apart(rings(r)), `${count} ${facing} at ${r} mm`);
+      if (facing !== 'same' && count > 2) assert.ok(!apart(rings(r / 3)), `${count} ${facing} at ${r / 3} mm`);
+    }
+  }
+});
+
+test('a print KML keeps a ring or grid of bins, and reads one without a pattern as just one', () => {
+  const centre = { name: 'Mount Washington', lat: 44.2706, lon: -71.3033 };
+  const bins = [
+    { name: 'SD cards', shape: 'rect', lengthMm: 24, widthMm: 2.1, depthMm: 16, from: 'low', x: 0, y: 0, turn: 0, pattern: 'ring', count: 8, radiusMm: 30, facing: 'along' },
+    { name: 'AA batteries', shape: 'circle', lengthMm: 14.5, widthMm: 14.5, depthMm: 25, from: 'mid', x: 10, y: -20, turn: 30, pattern: 'grid', cols: 4, rows: 2, gapMm: 2.5 },
+    { name: 'Drone battery', shape: 'oval', lengthMm: 40, widthMm: 22, depthMm: 15, from: 'high', x: 25, y: -20, turn: -30 },
+  ];
+  const set = { sideKm: 20, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: false, labelText: '', balance: false, infillPercent: 15, cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks: [], bins, binClearMm: 0.4 };
+  const model = { zoom: 12, pixelM: 27.8, lowM: 410, highM: 1916, reliefMm: 13.55, triangles: 81590 };
+  const text = core.printKml({ centre, set, model });
+  assert.deepEqual(core.parsePrintKml(text).set.bins, bins);
+  assert.throws(() => core.parsePrintKml(text.replace('<value>8</value>', '<value>1</value>')), /SD cards/);
+});
