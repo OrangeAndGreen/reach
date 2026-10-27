@@ -891,6 +891,8 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ['shoreRidge', 'Shoreline as a ridge (1) or a groove (0)', set.shoreRidge ? 1 : 0],
     ['bottomLabel', 'Label cut into the underside (1 yes, 0 no)', set.label ? 1 : 0],
     ['bottomText', 'Own text cut into the underside, a line a line', set.labelText ?? ''],
+    ['balanceNotch', 'Notch under the centre of mass to balance it on (1 yes, 0 no)', set.balance ? 1 : 0],
+    ['infillPercent', 'Infill the centre of mass is found for (%)', set.infillPercent ?? INFILL_PERCENT],
     ['cornerMm', 'Corner radius (mm, 0 for square)', set.cornerMm ?? 0],
     ['shape', 'Shape', set.shape ?? 'square'],
     ['aspect', 'Rectangle: long side over short side', set.aspect ?? 2],
@@ -937,6 +939,15 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
         ['labelText', 'Label text', model.label.lines.join(' / ')],
         ['labelLetterMm', 'Label letter height (mm)', +(model.label.pxMm * 7).toFixed(2)],
         ['labelDepthMm', 'Label depth (mm)', +model.label.depthMm.toFixed(2)],
+      );
+    }
+    if (model.balance?.depthMm) {
+      const b = model.balance;
+      derived.push(
+        ['notchXMm', 'Balance notch, mm from the west edge of the model', +b.x.toFixed(2)],
+        ['notchYMm', 'Balance notch, mm from the south edge of the model', +b.y.toFixed(2)],
+        ['notchDepthMm', 'Balance notch depth (mm)', +b.depthMm.toFixed(2)],
+        ['massHeightMm', 'Centre of mass, mm above the bed', +b.massZ.toFixed(2)],
       );
     }
     if (model.buildings) {
@@ -1074,6 +1085,9 @@ export function parsePrintKml(text) {
       label: values.bottomLabel === '1',
       // files from before their own text have none
       labelText: values.bottomText ?? '',
+      // files from before the balance notch have none
+      balance: values.balanceNotch === '1',
+      infillPercent: values.infillPercent == null ? INFILL_PERCENT : num('infillPercent', 1, 100),
       // files from before rounded corners are square
       cornerMm: values.cornerMm == null ? 0 : num('cornerMm', 0, 100),
       // files from before shapes are squares with north up
@@ -1379,33 +1393,42 @@ export function labelInk(lines, north = null) {
  * that makes them larger), centred and mirrored so they read when the print
  * is turned over, the model's top still at the top. With north (the bearing
  * the top faces), an arrow above them points north. wrap is the line
- * with the coordinates on it, or null to keep every line whole. Returns { lines, pxMm,
+ * with the coordinates on it, or null to keep every line whole. notch (from
+ * balanceNotch) is a hole the label keeps clear of: the label moves off the
+ * middle, above, below or to one side of it, where it is largest. Returns { lines, pxMm,
  * depthMm, cellMm, ink, w, h, mid, midY }: the ink grid with a millimetre or
  * so of bare bed around it, cellMm to a cell, centred on mid, midY; or { why }
  * when the label can't be cut.
  */
-export function bottomLabel(lines, zMm, n, widthMm, shape = null, north = null, wrap = 0) {
+export function bottomLabel(lines, zMm, n, widthMm, shape = null, north = null, wrap = 0, notch = null) {
   const layouts = wrap == null ? [lines] : [lines, [...lines.slice(0, wrap), ...lines[wrap].split(' '), ...lines.slice(wrap + 1)]];
-  const [mid, midY] = shape ? shape.centre : [widthMm / 2, widthMm / 2];
+  const middle = shape ? shape.centre : [widthMm / 2, widthMm / 2];
   const padOf = (pxMm) => Math.ceil(2 / pxMm); // a millimetre or so of cells
-  // Within a shape, the box and a millimetre round it must clear the outline.
-  const fits = (text, pxMm) => {
-    if (!shape) return true;
+  // Where the box goes: the middle, or beside the notch. The box and a millimetre round it must clear the outline and the notch.
+  const place = (text, pxMm) => {
     const pad = padOf(pxMm);
     const hw = ((text.w + 2 * pad) / 2) * (pxMm / 2) + 1, hh = ((text.h + 2 * pad) / 2) * (pxMm / 2) + 1;
-    const corners = [[mid - hw, midY - hh], [mid + hw, midY - hh], [mid + hw, midY + hh], [mid - hw, midY + hh]];
-    return corners.every((p) => inRing(p, shape.ring)) &&
-      !shape.ring.some(([x, y]) => Math.abs(x - mid) < hw && Math.abs(y - midY) < hh);
+    const spots = !notch ? [middle] : [middle, ...[
+      [middle[0], notch.y - notch.r - hh], [middle[0], notch.y + notch.r + hh],
+      [notch.x - notch.r - hw, middle[1]], [notch.x + notch.r + hw, middle[1]],
+    ].sort((a, b) => Math.hypot(a[0] - middle[0], a[1] - middle[1]) - Math.hypot(b[0] - middle[0], b[1] - middle[1]))];
+    return spots.find(([x, y]) => {
+      if (notch && Math.hypot(Math.max(0, Math.abs(notch.x - x) - hw), Math.max(0, Math.abs(notch.y - y) - hh)) < notch.r - 1e-9) return false;
+      if (!shape) return x - hw >= 0 && x + hw <= widthMm && y - hh >= 0 && y + hh <= widthMm;
+      const corners = [[x - hw, y - hh], [x + hw, y - hh], [x + hw, y + hh], [x - hw, y + hh]];
+      return corners.every((p) => inRing(p, shape.ring)) && !shape.ring.some(([px, py]) => Math.abs(px - x) < hw && Math.abs(py - y) < hh);
+    });
   };
   let best = null;
   for (const l of layouts) {
     const text = labelInk(l, north);
-    let pxMm = Math.min(LABEL_MAX_PX, (widthMm * 0.85) / (text.w / 2), (widthMm * 0.6) / (text.h / 2));
-    while (pxMm >= LABEL_MIN_PX && !fits(text, pxMm)) pxMm *= 0.97;
-    if (!best || pxMm > best.pxMm) best = { lines: l, text, pxMm };
+    let pxMm = Math.min(LABEL_MAX_PX, (widthMm * 0.85) / (text.w / 2), (widthMm * 0.6) / (text.h / 2)), spot;
+    while (pxMm >= LABEL_MIN_PX && !(spot = place(text, pxMm))) pxMm *= 0.97;
+    if (!best || pxMm > best.pxMm) best = { lines: l, text, pxMm, spot };
   }
-  const { text, pxMm } = best;
-  if (pxMm < LABEL_MIN_PX) return { why: `a ${widthMm} mm ${shape ? 'shape' : 'model'} is too small for letters that print` };
+  const { text, pxMm, spot } = best;
+  if (pxMm < LABEL_MIN_PX) return { why: `a ${widthMm} mm ${shape ? 'shape' : 'model'} is too small for letters that print${notch ? ' beside the balance notch' : ''}` };
+  const [mid, midY] = spot;
   const cellMm = pxMm / 2;
   const pad = padOf(pxMm);
   const w = text.w + 2 * pad, h = text.h + 2 * pad;
@@ -1483,6 +1506,135 @@ function labelCells(label) {
   return tris;
 }
 
+// ---------- balance ----------
+// A cone cut up into the underside at the centre of mass, to balance the
+// print on a pencil point. It balances steadily when the cone's tip is above
+// the centre of mass, so the print hangs from it, and it is cut as deep as
+// the ground over it allows, up to NOTCH_ABOVE_MM over.
+
+/** The notch's walls lean NOTCH_HALF_ANGLE degrees from upright: steep enough to print without support, wider than a sharpened pencil. */
+export const NOTCH_HALF_ANGLE = 30;
+/** The least model left over the notch, the most and least it is cut, and how far over the centre of mass its tip aims (mm). */
+export const NOTCH_ROOF_MM = 1.2;
+export const NOTCH_MAX_MM = 12;
+export const NOTCH_MIN_MM = 2;
+export const NOTCH_ABOVE_MM = 2;
+/** How thick a slicer makes the walls and skins (mm), all printed solid round the infill. */
+export const SHELL_MM = 1;
+/** Infill shares to choose from, in percent: the slicer's, since the skins weigh more than the infill. */
+export const INFILL_STOPS = [5, 10, 15, 20, 25, 40, 100];
+export const INFILL_PERCENT = 15;
+const NOTCH_SIDES = 48;
+
+/**
+ * The volume and surface of a closed solid, from its triangles (three points
+ * each), as sums: volume and its moments vx, vy, vz, and area and its
+ * moments ax, ay, az. Triangles on the bed (z = 0) add no volume, so a
+ * flat bottom may be left out of parts and its area added after (withBottom).
+ * parts is a list of triangle lists; map, when given, moves each point first.
+ */
+export function massMoments(parts, map = null) {
+  const m = { volume: 0, vx: 0, vy: 0, vz: 0, area: 0, ax: 0, ay: 0, az: 0 };
+  for (const tris of parts) {
+    for (let t = 0; t < tris.length; t += 3) {
+      const [a, b, c] = map ? [map(tris[t]), map(tris[t + 1]), map(tris[t + 2])] : [tris[t], tris[t + 1], tris[t + 2]];
+      const sx = a[0] + b[0] + c[0], sy = a[1] + b[1] + c[1], sz = a[2] + b[2] + c[2];
+      // the tetrahedron from the origin, signed
+      const v = (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6;
+      m.volume += v; m.vx += (v * sx) / 4; m.vy += (v * sy) / 4; m.vz += (v * sz) / 4;
+      const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], wx = c[0] - a[0], wy = c[1] - a[1], wz = c[2] - a[2];
+      const area = Math.hypot(uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx) / 2;
+      m.area += area; m.ax += (area * sx) / 3; m.ay += (area * sy) / 3; m.az += (area * sz) / 3;
+    }
+  }
+  return m;
+}
+
+/** moments (massMoments) with a flat bottom on the bed added: area mm² centred on x, y. */
+export function withBottom(moments, area, x, y) {
+  return { ...moments, area: moments.area + area, ax: moments.ax + area * x, ay: moments.ay + area * y };
+}
+
+/**
+ * Where a print's weight centres, { x, y, z } in model mm, from its moments
+ * (massMoments, bottom included): a shell shellMm thick all round printed
+ * solid, and the rest at infill (0 to 1). At 1 it is the centre of volume.
+ */
+export function centreOfMass(moments, infill = 1, shellMm = SHELL_MM) {
+  const { volume, vx, vy, vz, area, ax, ay, az } = moments;
+  const shell = Math.min(volume, shellMm * area), k = shell / area; // a thin print is all shell
+  const mass = shell + infill * (volume - shell);
+  const at = (v, a) => (k * a + infill * (v - k * a)) / mass;
+  return { x: at(vx, ax), y: at(vy, ay), z: at(vz, az) };
+}
+
+/**
+ * The notch to balance a print on, under mass (centreOfMass): a cone up into
+ * the bottom at mass.x, mass.y, its tip NOTCH_ABOVE_MM over mass.z or as
+ * high as leaves NOTCH_ROOF_MM of model over every point of it, up to
+ * NOTCH_MAX_MM. zMm is the n x n top in mm (row 0 north); bins (each
+ * { ring, floorMm }) thin the model over them to their floors. ring is a
+ * shape's outline, or null for the whole square; the notch keeps a
+ * millimetre inside it. Returns { x, y, r, depthMm, massZ, aboveMm },
+ * aboveMm negative when the tip is under the centre of mass, or { why }.
+ */
+export function balanceNotch(mass, zMm, n, widthMm, { ring = null, bins = [] } = {}) {
+  const step = widthMm / (n - 1), m = n - 1, slope = Math.tan(NOTCH_HALF_ANGLE * RAD);
+  const { x, y } = mass;
+  const inside = (r) => (ring ? inRing([x, y], ring) && distanceToRing([x, y], ring) >= r + 1
+    : x - r - 1 >= 0 && x + r + 1 <= widthMm && y - r - 1 >= 0 && y + r + 1 <= widthMm);
+  if (!inside(0)) return { why: 'its centre of mass is off the print' };
+  // the grid points near enough to be over the deepest notch, with the model's top over each
+  const reach = NOTCH_MAX_MM * slope + step, near = [];
+  for (let j = Math.max(0, Math.floor(m - (y + reach) / step)); j <= Math.min(m, Math.ceil(m - (y - reach) / step)); j++) {
+    for (let i = Math.max(0, Math.floor((x - reach) / step)); i <= Math.min(m, Math.ceil((x + reach) / step)); i++) {
+      const p = [i * step, (m - j) * step], d = Math.hypot(p[0] - x, p[1] - y);
+      if (d > reach) continue;
+      let top = zMm[j * n + i];
+      for (const b of bins) if (b.floorMm < top && inRing(p, b.ring)) top = b.floorMm;
+      near.push([d, top]);
+    }
+  }
+  // a grid point a step beyond the rim counts too, since the ground between grid points slopes from them
+  const fits = (h) => inside(h * slope) && near.every(([d, top]) => d > h * slope + step || top - Math.max(0, h - d / slope) >= NOTCH_ROOF_MM);
+  let h = Math.min(NOTCH_MAX_MM, Math.round((mass.z + NOTCH_ABOVE_MM) * 10) / 10);
+  while (h >= NOTCH_MIN_MM && !fits(h)) h = Math.round((h - 0.1) * 10) / 10;
+  if (h < NOTCH_MIN_MM) {
+    if (!inside(NOTCH_MIN_MM * slope)) return { why: 'its centre of mass is too near the edge' };
+    const thin = Math.min(...near.filter(([d]) => d <= NOTCH_MIN_MM * slope + step).map(([, top]) => top));
+    return { why: `the model is only ${thin.toFixed(1)} mm thick over its centre of mass` };
+  }
+  return { x, y, r: h * slope, depthMm: h, massZ: mass.z, aboveMm: h - mass.z };
+}
+
+/** The notch's rim on the bed, counter-clockwise from above. */
+function notchRim({ x, y, r }) {
+  return Array.from({ length: NOTCH_SIDES }, (_, k) => [x + r * Math.cos((2 * Math.PI * k) / NOTCH_SIDES), y + r * Math.sin((2 * Math.PI * k) / NOTCH_SIDES), 0]);
+}
+
+/** The notch's cone from its rim (notchRim) up to its tip, facing down into it. */
+function notchCone(rim, { x, y, depthMm }) {
+  const tip = [x, y, depthMm], tris = [];
+  for (let k = 0; k < rim.length; k++) tris.push(rim[(k + 1) % rim.length], rim[k], tip);
+  return tris;
+}
+
+/**
+ * The bottom of a print with holes for a label's box and a notch, as
+ * triangles facing down: the bed from outline (on the bed, counter-clockwise,
+ * every point kept) in to them, then the label's cells and the notch's cone.
+ */
+function holedBottom(outline, label, notch) {
+  const rim = notch ? notchRim(notch) : null;
+  const holes = [...(label ? [labelSides(label).flatMap((s) => s.slice(0, -1))] : []), ...(rim ? [rim] : [])];
+  const bed = triangulate([outline, ...holes]);
+  const tris = [];
+  for (let t = 0; t < bed.length; t += 3) tris.push(bed[t], bed[t + 2], bed[t + 1]);
+  if (label) for (const p of labelCells(label)) tris.push(p);
+  if (rim) for (const p of notchCone(rim, notch)) tris.push(p);
+  return tris;
+}
+
 /**
  * A point of a widthMm square print moved so the square's corners are rounded
  * to radius rMm. Only the rMm x rMm box at each corner moves: each point there
@@ -1514,7 +1666,9 @@ export function roundCorner(p, widthMm, rMm, corners = null) {
  * north-west, true to round) limits it to some, the outside corners of a set
  * of pieces. cells (from binCells), when given, marks the grid cells that
  * print, (n - 1)² of them row by row; the rest are left open for extra to
- * fill, as binTriangles does round a bin.
+ * fill, as binTriangles does round a bin. label may instead be a function
+ * of the solid's massMoments (bottom included) that returns { label, notch }:
+ * the label, and a notch (balanceNotch) cut up into the bottom.
  */
 export function terrainStl(zMm, n, widthMm, extra = [], label = null, cornerMm = 0, corners = null, cells = null) {
   const step = widthMm / (n - 1);
@@ -1547,11 +1701,18 @@ export function terrainStl(zMm, n, widthMm, extra = [], label = null, cornerMm =
     const bot0 = [X(i0), Y(j0), 0], bot1 = [X(i1), Y(j1), 0];
     tri(bot0, bot1, top1); // wall, facing outward
     tri(bot0, top1, top0);
-    if (!label) tri(centre, bot1, bot0); // bottom, facing down
   }
-  if (label) for (const p of labelledBottom(label, ring.map(([i, j]) => [X(i), Y(j), 0]), n)) tris.push(p);
-  for (const p of extra) tris.push(p);
   const r = Math.min(cornerMm, widthMm / 2);
+  let notch = null;
+  if (typeof label === 'function') {
+    const moments = massMoments([tris, extra], r > 0 ? (p) => roundCorner(p, widthMm, r, corners) : null);
+    ({ label = null, notch = null } = label(withBottom(moments, widthMm * widthMm, widthMm / 2, widthMm / 2)));
+  }
+  const perim = ring.map(([i, j]) => [X(i), Y(j), 0]);
+  if (notch) for (const p of holedBottom(perim, label, notch)) tris.push(p);
+  else if (label) for (const p of labelledBottom(label, perim, n)) tris.push(p);
+  else for (let k = 0; k < perim.length; k++) tri(centre, perim[(k + 1) % perim.length], perim[k]); // bottom, facing down
+  for (const p of extra) tris.push(p);
   if (r > 0) for (let k = 0; k < tris.length; k++) tris[k] = roundCorner(tris[k], widthMm, r, corners);
   return writeStl(tris);
 }
@@ -1920,6 +2081,8 @@ function cellOutlines(cells, n) {
  * Returns { tris, top }, top being how many triangles the top surface has:
  * they come first. open (from binCells) is the cells that print when bins
  * leave some open for extra to fill; the outline still follows shape's.
+ * label may instead be a function of the solid's massMoments, as in
+ * terrainStl, that returns { label, notch }.
  */
 export function shapeMesh(zMm, shape, extra = [], label = null, open = null) {
   const { ring, n, widthMm } = shape;
@@ -1945,10 +2108,18 @@ export function shapeMesh(zMm, shape, extra = [], label = null, open = null) {
     const b0 = [t0[0], t0[1], 0], b1 = [t1[0], t1[1], 0];
     tris.push(b0, b1, t1, b0, t1, t0); // wall, facing outward
   }
-  const bed = ring.map(([x, y]) => [x, y, 0]);
-  const bottom = triangulate(label ? [bed, labelSides(label).flatMap((s) => s.slice(0, -1))] : [bed]);
-  for (let t = 0; t < bottom.length; t += 3) tris.push(bottom[t], bottom[t + 2], bottom[t + 1]); // facing down
-  if (label) for (const p of labelCells(label)) tris.push(p);
+  let notch = null;
+  if (typeof label === 'function') {
+    // the outline's area and centroid; ringArea2 is twice the area
+    const area2 = ringArea2(ring);
+    let cx = 0, cy = 0;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const f = ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+      cx += (ring[j][0] + ring[i][0]) * f; cy += (ring[j][1] + ring[i][1]) * f;
+    }
+    ({ label = null, notch = null } = label(withBottom(massMoments([tris, extra]), area2 / 2, cx / (3 * area2), cy / (3 * area2))));
+  }
+  for (const p of holedBottom(ring.map(([x, y]) => [x, y, 0]), label, notch)) tris.push(p); // facing down
   for (const p of extra) tris.push(p);
   return { tris, top };
 }

@@ -149,7 +149,7 @@ test('a print KML keeps each bin, as a pin at its centre', () => {
     { name: 'AA battery', shape: 'circle', lengthMm: 14.5, widthMm: 14.5, depthMm: 25, from: 'mid', x: 0, y: 0, turn: 0 },
     { name: 'Drone battery', shape: 'oval', lengthMm: 40, widthMm: 22, depthMm: 15, from: 'high', x: 25, y: -20, turn: -30 },
   ];
-  const set = { sideKm: 20, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks: [], bins, binClearMm: 0.3 };
+  const set = { sideKm: 20, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: false, labelText: '', balance: false, infillPercent: 15, cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks: [], bins, binClearMm: 0.3 };
   const model = { zoom: 12, pixelM: 27.8, lowM: 410, highM: 1916, reliefMm: 13.55, triangles: 81590, binRaiseMm: 2 };
   const text = core.printKml({ centre, set, model });
   assert.match(text, /<Data name="bins">.*<value>3<\/value>/);
