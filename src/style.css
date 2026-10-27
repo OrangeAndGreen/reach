@@ -151,6 +151,18 @@ button.primary:disabled { opacity: 0.55; cursor: progress; }
 /* imported tracks: swatch, name, length, level, remove */
 .tracks li { grid-template-columns: 12px minmax(0, 1fr) auto auto auto; }
 .tracks input.level { padding: 3px 6px; font-size: 13px; width: 5.5em; }
+/* bins: one card each, the thing's size and depth, then where it sits */
+.bins { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.bins li { border: 1px solid var(--rule); border-radius: 6px; background: var(--paper); padding: 6px 8px 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.bins .head { display: flex; align-items: center; gap: 8px; }
+.bins .head .swatch { border-radius: 2px; }
+.bins .head input { flex: 1; font-weight: 600; padding: 3px 6px; }
+.bins .head button { background: none; border: 0; cursor: pointer; color: var(--ink-3); font-size: 18px; line-height: 1; padding: 2px 6px; }
+.bins .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 6px 8px; }
+.bins .grid label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--ink-3); min-width: 0; }
+.bins .grid input, .bins .grid select { padding: 3px 6px; font-size: 13px; width: 100%; }
+.bins .why { margin: 0; font-size: 12px; color: var(--warn); }
+.row .field.grow-0 { flex: 0 0 auto; }
 .field button.add {
   align-self: flex-start; background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 12px; cursor: pointer;
 }
