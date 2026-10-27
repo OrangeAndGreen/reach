@@ -900,6 +900,8 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ...Object.keys(ROAD_CLASSES).map((cls) => [`${cls}Mm`, `${cap(cls)} roads from OpenStreetMap (mm up, negative sunk, 0 for none)`, set.roadMm?.[cls] ?? 0]),
     ...Object.entries(WATER_KEYS).map(([kind, k]) => [k, `${WATER_KINDS[kind]} from OpenStreetMap (mm up, negative sunk, 0 for none)`, set.waterMm?.[kind] ?? 0]),
     ['tracks', 'Tracks of your own (each its own placemark, with its level in mm up, negative sunk)', set.tracks?.length ?? 0],
+    ['bins', 'Bins cut into the top (each its own placemark, at its centre)', set.bins?.length ?? 0],
+    ['binClearanceMm', 'Bin clearance added to the length and width (mm)', set.binClearMm ?? BIN_CLEARANCE_MM],
     ['piecesAcross', 'Pieces across (each one model width)', cols],
     ['piecesDown', 'Pieces down', rows],
   ];
@@ -925,7 +927,8 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
       ['lowestM', 'Lowest point (m)', Math.round(model.lowM)],
       ['highestM', 'Highest point (m)', Math.round(model.highM)],
       ['reliefMm', 'Relief on the model (mm)', +model.reliefMm.toFixed(2)],
-      ['modelHeightMm', 'Model height overall (mm)', +(set.baseMm + model.reliefMm).toFixed(2)],
+      ...(model.binRaiseMm ? [['binBaseRaiseMm', 'Base raised for the bins (mm)', +model.binRaiseMm.toFixed(2)]] : []),
+      ['modelHeightMm', 'Model height overall (mm)', +(set.baseMm + (model.binRaiseMm || 0) + model.reliefMm).toFixed(2)],
       ['metresPerMmVertical', 'Metres of ground per mm of model height', +vertical.toFixed(2)],
       ['triangles', 'STL triangles', model.triangles],
     );
@@ -989,6 +992,15 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
   const trackPlacemarks = (set.tracks || []).map((t) => `  <Placemark><name>${escapeXml(t.name)}</name><styleUrl>#track</styleUrl><ExtendedData><Data name="trackMm"><value>${t.levelMm}</value></Data></ExtendedData><MultiGeometry>${t.lines
     .map((line) => `<LineString><tessellate>1</tessellate><coordinates>${line.map(([lon, lat]) => `${lon},${lat},0`).join(' ')}</coordinates></LineString>`).join('')}</MultiGeometry></Placemark>
 `).join('');
+  // each bin a pin at its centre, its size and place on the model kept with it
+  const mid = acrossMm / 2;
+  const binPlacemarks = (set.bins || []).map((bin) => {
+    const g = frame.toLonLat(mid + bin.x, mid + bin.y);
+    const fields = { binName: bin.name, binShape: bin.shape, binLengthMm: bin.lengthMm, binWidthMm: bin.widthMm, binDepthMm: bin.depthMm, binFrom: bin.from, binXMm: bin.x, binYMm: bin.y, binTurnDeg: bin.turn };
+    const data = Object.entries(fields).map(([k, v]) => `<Data name="${k}"><value>${escapeXml(v)}</value></Data>`).join('');
+    return `  <Placemark><name>${escapeXml(`Bin: ${bin.name}`)}</name><ExtendedData>${data}</ExtendedData><Point><coordinates>${g.lon},${g.lat},0</coordinates></Point></Placemark>
+`;
+  }).join('');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
@@ -1006,7 +1018,7 @@ ${data(derived)}
     </ExtendedData>
     <Polygon><tessellate>1</tessellate><outerBoundaryIs><LinearRing><coordinates>${coordText(ring)}</coordinates></LinearRing></outerBoundaryIs></Polygon>
   </Placemark>
-${piecePlacemarks}${trackPlacemarks}  <Placemark><name>${escapeXml(centre.name)}</name><Point><coordinates>${centre.lon.toFixed(6)},${centre.lat.toFixed(6)},0</coordinates></Point></Placemark>
+${piecePlacemarks}${trackPlacemarks}${binPlacemarks}  <Placemark><name>${escapeXml(centre.name)}</name><Point><coordinates>${centre.lon.toFixed(6)},${centre.lat.toFixed(6)},0</coordinates></Point></Placemark>
 </Document>
 </kml>
 `;
@@ -1081,6 +1093,9 @@ export function parsePrintKml(text) {
       // files from before pieces are one piece
       cols: values.piecesAcross == null ? 1 : Math.round(num('piecesAcross', 1, PIECES_MAX)),
       rows: values.piecesDown == null ? 1 : Math.round(num('piecesDown', 1, PIECES_MAX)),
+      // files from before bins have none
+      bins: parseBins(text),
+      binClearMm: values.binClearanceMm == null ? BIN_CLEARANCE_MM : num('binClearanceMm', 0, 5),
       // files from before tracks have none
       tracks: parseTrackKml(text).filter((t) => t.levelMm != null).map(({ name, lines, levelMm }) => {
         if (!Number.isFinite(levelMm) || Math.abs(levelMm) > 10) throw new Error(`the track "${name}"'s level is out of range`);
@@ -1088,6 +1103,29 @@ export function parsePrintKml(text) {
       }),
     },
   };
+}
+
+/** The bins in a print's KML, one placemark each. */
+function parseBins(text) {
+  const bins = [];
+  for (const [, body] of text.matchAll(/<Placemark\b[^>]*>([\s\S]*?)<\/Placemark>/g)) {
+    if (!body.includes('name="binShape"')) continue;
+    const v = {};
+    for (const m of body.matchAll(/<Data\s+name="(bin\w+)"[^>]*>[\s\S]*?<value>([\s\S]*?)<\/value>/g)) v[m[1]] = unescapeXml(m[2].trim());
+    const num = (k, lo, hi) => {
+      const x = Number(v[k]);
+      if (v[k] == null || !Number.isFinite(x) || x < lo || x > hi) throw new Error(`the bin "${v.binName}"'s ${k} is missing or out of range`);
+      return x;
+    };
+    if (!['rect', 'circle'].includes(v.binShape)) throw new Error(`the bin "${v.binName}"'s shape is not one Reach cuts`);
+    bins.push({
+      name: v.binName || 'Bin', shape: v.binShape,
+      lengthMm: num('binLengthMm', 0.1, 1000), widthMm: num('binWidthMm', 0.1, 1000), depthMm: num('binDepthMm', 0.1, 500),
+      from: BIN_FROM[v.binFrom] ? v.binFrom : 'low',
+      x: num('binXMm', -2000, 2000), y: num('binYMm', -2000, 2000), turn: num('binTurnDeg', -360, 360),
+    });
+  }
+  return bins;
 }
 
 /**
@@ -1474,9 +1512,11 @@ export function roundCorner(p, widthMm, rMm, corners = null) {
  * into the bottom. cornerMm rounds the corners (roundCorner), so they are
  * slower to lift off the bed; corners (south-west, south-east, north-east,
  * north-west, true to round) limits it to some, the outside corners of a set
- * of pieces.
+ * of pieces. cells (from binCells), when given, marks the grid cells that
+ * print, (n - 1)² of them row by row; the rest are left open for extra to
+ * fill, as binTriangles does round a bin.
  */
-export function terrainStl(zMm, n, widthMm, extra = [], label = null, cornerMm = 0, corners = null) {
+export function terrainStl(zMm, n, widthMm, extra = [], label = null, cornerMm = 0, corners = null, cells = null) {
   const step = widthMm / (n - 1);
   const X = (i) => i * step;
   const Y = (j) => (n - 1 - j) * step; // north is +y
@@ -1486,6 +1526,7 @@ export function terrainStl(zMm, n, widthMm, extra = [], label = null, cornerMm =
   // top, counter-clockwise seen from above
   for (let j = 0; j < n - 1; j++) {
     for (let i = 0; i < n - 1; i++) {
+      if (cells && !cells[j * (n - 1) + i]) continue;
       const a = [X(i), Y(j), Z(i, j)], b = [X(i + 1), Y(j), Z(i + 1, j)];
       const c = [X(i), Y(j + 1), Z(i, j + 1)], d = [X(i + 1), Y(j + 1), Z(i + 1, j + 1)];
       tri(a, c, b);
@@ -1678,7 +1719,16 @@ export function shapeCells(outline, n, widthMm) {
       if (crossed % 2 && !near[j * m + i]) cells[j * m + i] = 1;
     }
   }
-  // Two cells meeting only at a corner would pinch the outline of the whole cells to a point.
+  unpinch(cells, m);
+  const used = new Uint8Array(n * n);
+  const corners = (i, j) => { used[j * n + i] = used[j * n + i + 1] = used[(j + 1) * n + i] = used[(j + 1) * n + i + 1] = 1; };
+  for (let j = 0; j < m; j++) for (let i = 0; i < m; i++) if (cells[j * m + i]) corners(i, j);
+  for (const [x, y] of ring) corners(...cellOf(x, y));
+  return { ring, cells, used, n, widthMm };
+}
+
+/** Two cells of an m x m set meeting only at a corner would pinch their outline to a point: one of each such pair goes. */
+function unpinch(cells, m) {
   for (let changed = true; changed;) {
     changed = false;
     for (let j = 0; j < m - 1; j++) {
@@ -1689,11 +1739,7 @@ export function shapeCells(outline, n, widthMm) {
       }
     }
   }
-  const used = new Uint8Array(n * n);
-  const corners = (i, j) => { used[j * n + i] = used[j * n + i + 1] = used[(j + 1) * n + i] = used[(j + 1) * n + i + 1] = 1; };
-  for (let j = 0; j < m; j++) for (let i = 0; i < m; i++) if (cells[j * m + i]) corners(i, j);
-  for (const [x, y] of ring) corners(...cellOf(x, y));
-  return { ring, cells, used, n, widthMm };
+  return cells;
 }
 
 /** Height on an n x n grid of zMm (row 0 north) at model point (x, y), bilinear, clamped to the square. */
@@ -1872,10 +1918,12 @@ function cellOutlines(cells, n) {
  * them to the outline, walls down round the outline and a flat bottom, with
  * label (from bottomLabel) cut up into it and extra added at the end.
  * Returns { tris, top }, top being how many triangles the top surface has:
- * they come first.
+ * they come first. open (from binCells) is the cells that print when bins
+ * leave some open for extra to fill; the outline still follows shape's.
  */
-export function shapeMesh(zMm, shape, extra = [], label = null) {
-  const { ring, cells, n, widthMm } = shape;
+export function shapeMesh(zMm, shape, extra = [], label = null, open = null) {
+  const { ring, n, widthMm } = shape;
+  const cells = open || shape.cells;
   const step = widthMm / (n - 1), m = n - 1;
   const point = (k) => { const i = k % n, j = (k - i) / n; return [i * step, (m - j) * step, zMm[k]]; };
   const tris = [];
@@ -1887,7 +1935,7 @@ export function shapeMesh(zMm, shape, extra = [], label = null) {
     }
   }
   const edge = ring.map(([x, y]) => [x, y, gridAt(zMm, n, widthMm, x, y)]);
-  const loops = cellOutlines(cells, n).map((l) => l.map(point));
+  const loops = cellOutlines(shape.cells, n).map((l) => l.map(point));
   const islands = loops.filter((l) => ringArea2(l) > 0);
   for (const p of triangulate([edge, ...islands])) tris.push(p);
   for (const hole of loops.filter((l) => ringArea2(l) < 0)) for (const p of triangulate([hole])) tris.push(p);
@@ -1903,6 +1951,229 @@ export function shapeMesh(zMm, shape, extra = [], label = null) {
   if (label) for (const p of labelCells(label)) tris.push(p);
   for (const p of extra) tris.push(p);
   return { tris, top };
+}
+
+// ---------- bins ----------
+// Holes cut down into the top to stand things in (SD cards, batteries), each
+// with a flat floor and upright walls, deep enough to hold the thing while
+// the rest of it stands clear to grab.
+
+/**
+ * Things to stand in a bin, upright: the footprint (lengthMm by widthMm; a
+ * circle's lengthMm is its diameter) and how tall each stands.
+ */
+export const BIN_PRESETS = {
+  sd: { name: 'SD card', shape: 'rect', lengthMm: 24, widthMm: 2.1, heightMm: 32 },
+  microsd: { name: 'microSD card', shape: 'rect', lengthMm: 11, widthMm: 1, heightMm: 15 },
+  aa: { name: 'AA battery', shape: 'circle', lengthMm: 14.5, widthMm: 14.5, heightMm: 50.5 },
+  aaa: { name: 'AAA battery', shape: 'circle', lengthMm: 10.5, widthMm: 10.5, heightMm: 44.5 },
+  li18650: { name: '18650 cell', shape: 'circle', lengthMm: 18.5, widthMm: 18.5, heightMm: 65 },
+  cr2032: { name: 'CR2032 coin cell', shape: 'rect', lengthMm: 20, widthMm: 3.2, heightMm: 20 },
+};
+/** What a bin adds to the thing's length and width, so it slides in after printing. */
+export const BIN_CLEARANCE_MM = 0.4;
+/** The least plastic left under a bin's floor; the base grows to keep it. */
+export const BIN_FLOOR_MM = 1.5;
+/** What a bin's depth is measured down from: the lowest, average or highest ground under it. */
+export const BIN_FROM = { low: 'Lowest ground', mid: 'Average ground', high: 'Highest ground' };
+/** A bin's colour on the map and in the preview. */
+export const BIN_COLOUR = '#7a4fa3';
+/** How far roads, tracks and buildings keep clear of a bin's edge. */
+export const BIN_CLEAR_MM = 1;
+
+/** A preset's depth: half of it stands in the bin, the rest above to grab. */
+export const presetDepth = (preset) => Math.round(preset.heightMm / 2);
+
+/**
+ * A bin's outline, counter-clockwise, in a piece's model mm. origin is where
+ * the set's centre falls in the piece, and the bin's x and y are mm right and
+ * up from it; turn is degrees clockwise. The thing's size gets clearanceMm
+ * added, and growMm more each way. Sides are split every step at most, so
+ * the walls follow the ground.
+ */
+export function binRing(bin, { origin, step, clearanceMm = BIN_CLEARANCE_MM, growMm = 0 }) {
+  const t = (-(bin.turn || 0) * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+  const place = ([u, v]) => [origin[0] + bin.x + u * c - v * s, origin[1] + bin.y + u * s + v * c];
+  if (bin.shape === 'circle') {
+    const r = (bin.lengthMm + clearanceMm) / 2 + growMm;
+    const parts = Math.max(32, Math.ceil((2 * Math.PI * r) / step));
+    return Array.from({ length: parts }, (_, k) => place([r * Math.cos((2 * Math.PI * k) / parts), r * Math.sin((2 * Math.PI * k) / parts)]));
+  }
+  const a = (bin.lengthMm + clearanceMm) / 2 + growMm, b = (bin.widthMm + clearanceMm) / 2 + growMm;
+  return densify([[-a, -b], [a, -b], [a, b], [-a, b]].map(place), step);
+}
+
+/** Whether two convex rings are apart, by a gap along one of their sides' normals. */
+export function convexApart(p, q) {
+  const span = (r, nx, ny) => r.reduce(([lo, hi], [x, y]) => { const d = x * nx + y * ny; return [Math.min(lo, d), Math.max(hi, d)]; }, [Infinity, -Infinity]);
+  for (const poly of [p, q]) {
+    for (let k = 0; k < poly.length; k++) {
+      const a = poly[k], b = poly[(k + 1) % poly.length];
+      const nx = a[1] - b[1], ny = b[0] - a[0];
+      if (!nx && !ny) continue;
+      const [p0, p1] = span(p, nx, ny), [q0, q1] = span(q, nx, ny);
+      if (p1 < q0 || q1 < p0) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Which bins fit on an n x n grid widthMm across, and the grid cells left to
+ * print round them. rings are the bins' outlines (binRing), in order. A bin
+ * clears every cell within a cell of its outline, so the ground round it is
+ * at least 0.75 of a step wide, and fits only with a whole cell of printed
+ * ground between those and the print's edge, clear of a square's rounded
+ * corners (cornerMm, corners as terrainStl takes them) and of the bins before
+ * it. base is the cells the print has (shapeCells' cells), or null for the
+ * whole square. Returns { cells, placed, left }: placed lists bin indices,
+ * left { index, why } with why 'edge', 'corner' or 'overlap' (and other, the
+ * bin it overlaps).
+ */
+export function binCells(rings, n, widthMm, { base = null, cornerMm = 0, corners = null } = {}) {
+  const step = widthMm / (n - 1), m = n - 1;
+  const has = (i, j) => i >= 0 && j >= 0 && i < m && j < m && (!base || base[j * m + i]);
+  const removed = new Uint8Array(m * m);
+  const placed = [], left = [];
+  const r = Math.min(cornerMm, widthMm / 2);
+  const inCorner = ([x, y]) => {
+    const cx = x < r + step ? 0 : x > widthMm - r - step ? 1 : null;
+    const cy = y < r + step ? 0 : y > widthMm - r - step ? 1 : null;
+    return r > 0 && cx != null && cy != null && (!corners || corners[cy ? (cx ? 2 : 3) : cx]);
+  };
+  rings.forEach((ring, index) => {
+    if (ring.some(([x, y]) => x < step || y < step || x > widthMm - step || y > widthMm - step)) {
+      left.push({ index, why: 'edge' });
+      return;
+    }
+    const own = new Set();
+    for (const [x, y] of densify(ring, step / 2)) {
+      const ci = Math.floor(x / step), cj = Math.floor(m - y / step);
+      for (let j = cj - 1; j <= cj + 1; j++) for (let i = ci - 1; i <= ci + 1; i++) own.add(j * m + i);
+    }
+    const xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
+    for (let j = Math.floor(m - Math.max(...ys) / step); j <= Math.ceil(m - Math.min(...ys) / step); j++) {
+      for (let i = Math.floor(Math.min(...xs) / step); i <= Math.ceil(Math.max(...xs) / step); i++) {
+        if (inRing([(i + 0.5) * step, (m - j - 0.5) * step], ring)) own.add(j * m + i);
+      }
+    }
+    const clear = [...own].every((k) => {
+      const i = k % m, j = (k - i) / m;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) if (!has(i + di, j + dj)) return false;
+      return true;
+    });
+    if (!clear) { left.push({ index, why: 'edge' }); return; }
+    if (ring.some(inCorner)) { left.push({ index, why: 'corner' }); return; }
+    const other = placed.find((k) => !convexApart(ring, rings[k]));
+    if (other != null) { left.push({ index, why: 'overlap', other }); return; }
+    for (const k of own) removed[k] = 1;
+    placed.push(index);
+  });
+  const cells = new Uint8Array(m * m);
+  for (let k = 0; k < m * m; k++) cells[k] = (!base || base[k]) && !removed[k] ? 1 : 0;
+  return { cells: unpinch(cells, m), placed, left };
+}
+
+/**
+ * A bin's floor in mm: depthMm under the lowest, average or highest (from:
+ * low, mid, high) of the ground under its outline, read from ground, an
+ * n x n grid in mm. The average is of the grid points inside, when there are
+ * a few, else of the outline. Returns { floorMm, groundMm, open }: open when
+ * the ground at the outline dips under the floor somewhere, leaving that side
+ * open.
+ */
+export function binFloor(ring, ground, n, widthMm, from, depthMm) {
+  const step = widthMm / (n - 1), m = n - 1;
+  const rim = ring.map(([x, y]) => gridAt(ground, n, widthMm, x, y));
+  const inside = [];
+  const xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
+  for (let j = Math.max(0, Math.ceil(m - Math.max(...ys) / step)); j <= Math.min(m, Math.floor(m - Math.min(...ys) / step)); j++) {
+    for (let i = Math.max(0, Math.ceil(Math.min(...xs) / step)); i <= Math.min(m, Math.floor(Math.max(...xs) / step)); i++) {
+      if (inRing([i * step, (m - j) * step], ring)) inside.push(ground[j * n + i]);
+    }
+  }
+  const all = [...rim, ...inside];
+  const mean = (list) => list.reduce((a, b) => a + b, 0) / list.length;
+  const groundMm = from === 'low' ? Math.min(...all) : from === 'high' ? Math.max(...all) : mean(inside.length >= 4 ? inside : rim);
+  const floorMm = groundMm - depthMm;
+  return { floorMm, groundMm, open: rim.some((z) => z < floorMm) };
+}
+
+/**
+ * The triangles that close the top round bins left open by binCells: the
+ * ground from the printed cells in to each bin's outline, its walls straight
+ * down, and its flat floor. zMm is the terrain in mm, cells binCells' cells,
+ * and bins a list of { ring, floorMm }. Where the ground at the outline is
+ * under the floor, the outline is lifted to the floor there, so that side
+ * stands open.
+ */
+export function binTriangles(zMm, n, widthMm, cells, bins) {
+  const step = widthMm / (n - 1), m = n - 1;
+  const point = (k) => { const i = k % n, j = (k - i) / n; return [i * step, (m - j) * step, zMm[k]]; };
+  // ground within a hair of the floor counts as on it, so no wall is too short to survive the STL's rounding
+  const rims = bins.map(({ ring, floorMm }) => ring.map(([x, y]) => {
+    const z = gridAt(zMm, n, widthMm, x, y);
+    return [x, y, z < floorMm + 1e-3 ? floorMm : z];
+  }));
+  const tris = [];
+  for (const loop of cellOutlines(cells, n).map((l) => l.map(point))) {
+    if (ringArea2(loop) >= 0) continue; // the outline round the cells, not a hole in them
+    const within = rims.filter((rim) => inRing(rim[0], loop));
+    if (!within.length) continue;
+    for (const p of triangulate([loop, ...within])) tris.push(p);
+  }
+  bins.forEach(({ floorMm }, b) => {
+    const rim = rims[b], bed = rim.map(([x, y]) => [x, y, floorMm]);
+    for (let k = 0; k < rim.length; k++) {
+      const t0 = rim[k], t1 = rim[(k + 1) % rim.length], b0 = bed[k], b1 = bed[(k + 1) % rim.length];
+      // facing into the bin; where the outline sits on the floor, the wall there is nothing
+      if (t1[2] > floorMm) tris.push(b0, t1, b1);
+      if (t0[2] > floorMm) tris.push(b0, t0, t1);
+    }
+    for (const p of triangulate([bed])) tris.push(p);
+  });
+  return tris;
+}
+
+/** The runs of a line outside a convex ring. */
+function outsideRing(line, ring) {
+  const runs = [];
+  let run = null;
+  const at = (p, q, t) => [p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])];
+  for (let s = 0; s + 1 < line.length; s++) {
+    const p = line[s], q = line[s + 1];
+    const dx = q[0] - p[0], dy = q[1] - p[1], len2 = dx * dx + dy * dy || 1;
+    const [inside] = clipLine([p, q], ring);
+    const span = inside && [inside[0], inside[inside.length - 1]].map((r) => ((r[0] - p[0]) * dx + (r[1] - p[1]) * dy) / len2);
+    if (!span) {
+      if (!run) { run = [p]; runs.push(run); }
+      run.push(q);
+      continue;
+    }
+    if (span[0] > 1e-9) {
+      if (!run) { run = [p]; runs.push(run); }
+      run.push(at(p, q, span[0]));
+    }
+    run = null;
+    if (span[1] < 1 - 1e-9) { run = [at(p, q, span[1]), q]; runs.push(run); }
+  }
+  return runs;
+}
+
+/**
+ * Roads or tracks (as roadLines and trackLines give them, { line, ... })
+ * with the parts inside any of rings (convex) cut out, each run keeping the
+ * rest of its way's fields, and runs shorter than minMm dropped.
+ */
+export function linesClearOf(ways, rings, minMm = 0) {
+  let out = ways;
+  for (const ring of rings) out = out.flatMap((w) => outsideRing(w.line, ring).map((line) => ({ ...w, line })));
+  return out.filter((w) => lineLength(w.line) >= minMm);
+}
+
+/** Buildings (placeBuildings') less any whose footprint meets one of rings (convex). */
+export function buildingsClearOf(buildings, rings) {
+  return buildings.filter(({ rings: [outer] }) => rings.every((ring) => convexApart(convexHull(outer), ring)));
 }
 
 // ---------- buildings ----------

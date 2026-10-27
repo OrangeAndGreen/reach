@@ -51,6 +51,17 @@ function saveTracks() {
   } catch { /* storage blocked or full: the tracks just aren't remembered */ }
 }
 
+// Bins are kept apart too, as the tracks are.
+const BINS = 'reach.bins';
+function loadBins() {
+  try { return JSON.parse(localStorage.getItem(BINS)) || []; } catch { return []; }
+}
+function saveBins() {
+  try {
+    localStorage.setItem(BINS, JSON.stringify(state.bins.map(({ id, ...bin }) => bin)));
+  } catch { /* storage blocked: the bins just aren't remembered */ }
+}
+
 const saved = loadSettings();
 const state = {
   units: saved.units || 'metric',
@@ -70,6 +81,8 @@ const state = {
   busy: false,
   // { id, name, lines: [[lon, lat], ...] each, levelMm }, the id only for the list
   tracks: loadTracks().map((t, id) => ({ ...t, id })),
+  // { id, name, shape, lengthMm, widthMm, depthMm, from, x, y, turn }: x and y mm right and up from the print's centre
+  bins: loadBins().map((b, id) => ({ ...b, id })),
 };
 if (saved.limits) $('limits').value = saved.limits;
 if (saved.detail) $('detail').value = saved.detail;
@@ -779,6 +792,8 @@ function printSettings() {
     roadMm: roadSetting(),
     waterMm: $('print-water').value === 'osm' && Number($('print-side').value) <= core.WATER_MAX_KM ? levelsOf('water', core.WATER_KINDS) : core.NO_WATER,
     tracks: state.tracks.filter((t) => t.levelMm).map(({ name, lines, levelMm }) => ({ name, lines, levelMm })),
+    bins: state.bins.map((b) => ({ ...b })),
+    binClearMm: binClearance(),
     cols,
     rows,
   };
@@ -890,6 +905,7 @@ function drawPrintSquare(fit) {
   }
   L.circleMarker([centre.lat, centre.lon], { radius: 5, color: '#fff', weight: 2, fillColor: cssVar('--accent'), fillOpacity: 1, interactive: false })
     .addTo(printLayer);
+  drawBins(set, centre);
   // Wider, unseen grips over the line and the dot, so a finger can take hold of them.
   const edge = L.polygon(outline, { opacity: 0, weight: 18, fill: false, className: 'print-grip print-edge' }).addTo(printLayer);
   edge.getElement().addEventListener('pointerdown', (e) => startDrag(e, false));
@@ -1001,6 +1017,74 @@ function endDrag() {
     return;
   }
   movePrint(now.centre);
+}
+
+// ---------- bins on the map ----------
+// Each bin is outlined where it sits on the print, with a dot to drag it by.
+
+/** Where a set's centre sits on its frame, and the frame: bins are placed from there. */
+function binFrame(set, centre) {
+  const plan = core.piecePlan(centre, set);
+  return { frame: plan.frame, mid: plan.acrossMm / 2 };
+}
+
+function drawBins(set, centre) {
+  const { frame, mid } = binFrame(set, centre);
+  const at = ([x, y]) => { const p = frame.toLonLat(x, y); return [p.lat, p.lon]; };
+  const left = state.model?.bins;
+  for (const bin of state.bins) {
+    const ring = core.binRing(bin, { origin: [mid, mid], step: 1, clearanceMm: set.binClearMm }).map(at);
+    const out = left?.get(bin.id)?.why != null;
+    L.polygon(ring, { color: '#ffffff', weight: 4, opacity: 0.9, fill: false, interactive: false }).addTo(printLayer);
+    L.polygon(ring, { color: core.BIN_COLOUR, weight: 2, dashArray: out ? '3 4' : null, fill: true, fillOpacity: 0.25, interactive: false }).addTo(printLayer);
+    const dot = at([mid + bin.x, mid + bin.y]);
+    L.circleMarker(dot, { radius: 4, color: '#fff', weight: 1.5, fillColor: core.BIN_COLOUR, fillOpacity: 1, interactive: false }).addTo(printLayer);
+    const grip = L.circleMarker(dot, { radius: 12, opacity: 0, fillOpacity: 0, className: 'print-grip print-dot' }).addTo(printLayer);
+    grip.bindTooltip(bin.name, { direction: 'top', offset: [0, -8] });
+    grip.getElement().addEventListener('pointerdown', (e) => startBinDrag(e, bin));
+  }
+}
+
+let binDrag = null; // { bin, start, from, x, y, moved } while a bin is held
+
+function startBinDrag(e, bin) {
+  if (e.button > 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  map.dragging.disable();
+  const at = map.mouseEventToLatLng(e);
+  const { frame } = binFrame(printSettings(), state.print);
+  binDrag = { bin, start: map.mouseEventToContainerPoint(e), from: frame.toMm(at.lng, at.lat), x: bin.x, y: bin.y, moved: false };
+  map.getContainer().classList.add('print-dragging');
+  document.addEventListener('pointermove', moveBinDrag);
+  document.addEventListener('pointerup', endBinDrag);
+  document.addEventListener('pointercancel', endBinDrag);
+}
+
+function moveBinDrag(e) {
+  if (!binDrag.moved && map.mouseEventToContainerPoint(e).distanceTo(binDrag.start) < 4) return;
+  binDrag.moved = true;
+  const at = map.mouseEventToLatLng(e);
+  const { frame } = binFrame(printSettings(), state.print);
+  const [x, y] = frame.toMm(at.lng, at.lat);
+  // to the half millimetre, as the inputs step
+  binDrag.bin.x = Math.round((binDrag.x + x - binDrag.from[0]) * 2) / 2;
+  binDrag.bin.y = Math.round((binDrag.y + y - binDrag.from[1]) * 2) / 2;
+  drawPrintSquare(false);
+}
+
+function endBinDrag() {
+  document.removeEventListener('pointermove', moveBinDrag);
+  document.removeEventListener('pointerup', endBinDrag);
+  document.removeEventListener('pointercancel', endBinDrag);
+  map.getContainer().classList.remove('print-dragging');
+  map.dragging.enable();
+  const { moved } = binDrag;
+  binDrag = null;
+  if (!moved) return;
+  justDragged = true;
+  setTimeout(() => { justDragged = false; }, 0);
+  binsChanged();
 }
 
 /** Centres the print on a point moved to on the map, named once the lookup answers. */
@@ -1239,8 +1323,37 @@ async function buildModel() {
     }
     // Every piece stands on the base under the lowest point of them all, so their sides meet at one height.
     const lowM = Math.min(...read.map((r) => core.printHeights(r.heights, pieceSet, cut?.used).lowM));
+    // Each bin goes in the piece its centre falls in, its depth measured on the bare ground.
+    const step = set.widthMm / (n - 1);
+    const fitBins = (piece, groundMm) => {
+      const mid = plan.acrossMm / 2, origin = [mid - piece.x0, mid - piece.y0];
+      const mine = set.bins.filter((b) => [origin[0] + b.x, origin[1] + b.y].every((v) => v >= 0 && v <= set.widthMm));
+      const ring = (bin, growMm = 0) => core.binRing(bin, { origin, step, clearanceMm: set.binClearMm, growMm });
+      const rings = mine.map((bin) => ring(bin));
+      const fit = core.binCells(rings, n, set.widthMm, { base: cut?.cells, cornerMm: cut ? 0 : set.cornerMm, corners: split ? piece.corners : null });
+      return {
+        cells: fit.cells,
+        placed: fit.placed.map((k) => ({
+          id: mine[k].id, ring: rings[k], clear: ring(mine[k], core.BIN_CLEAR_MM),
+          ...core.binFloor(rings[k], groundMm, n, set.widthMm, mine[k].from, mine[k].depthMm),
+        })),
+        left: fit.left.map(({ index, why, other }) => ({ id: mine[index].id, why, other: other == null ? null : mine[other].id })),
+      };
+    };
+    // The base grows, the same on every piece, until the deepest floor has enough under it.
+    let binRaiseMm = 0;
+    if (set.bins.length) {
+      for (const { piece, heights } of read) {
+        for (const b of fitBins(piece, core.printHeights(heights, { ...pieceSet, lowM }, cut?.used).mm).placed) {
+          binRaiseMm = Math.max(binRaiseMm, Math.ceil((core.BIN_FLOOR_MM - b.floorMm) * 10 - 1e-6) / 10);
+        }
+      }
+    }
+    const builtSet = binRaiseMm > 0 ? { ...pieceSet, baseMm: pieceSet.baseMm + binRaiseMm } : pieceSet;
     const pieces = read.map(({ piece, heights, placed, buildings }) => {
-      const scaled = core.printHeights(heights, { ...pieceSet, lowM }, cut?.used);
+      const scaled = core.printHeights(heights, { ...builtSet, lowM }, cut?.used);
+      const bins = set.bins.length ? fitBins(piece, scaled.mm) : null;
+      const binClear = bins?.placed.map((b) => b.clear) || [];
       const shore = set.shoreMm > 0 ? core.shorePoints(heights, n) : null;
       if (shore) scaled.mm = core.markShore(scaled.mm, shore, set.shoreMm, set.shoreRidge);
       // Water and sunk roads are cut before the buildings and raised roads are stood on the ground, so they reach down into it rather than float.
@@ -1268,6 +1381,7 @@ async function buildModel() {
       if (roadReply) {
         ways = core.roadLines(roadReply.osm, piece.frame.bounds, set.widthMm, { frame: piece.frame, pieces: outline?.pieces })
           .filter(({ cls }) => set.roadMm[cls]);
+        if (binClear.length) ways = core.linesClearOf(ways, binClear, 1);
         const sunk = core.carveRoads(scaled.mm, ways, n, { ...pieceSet, ...scaled, levels: set.roadMm, skip: water?.areas, heights });
         scaled.mm = sunk.mm;
         roadMask = sunk.mask;
@@ -1275,12 +1389,21 @@ async function buildModel() {
       let trackWays = null, trackMask = null;
       if (set.tracks.length) {
         trackWays = core.trackLines(set.tracks, { frame: piece.frame, widthMm: set.widthMm, pieces: outline?.pieces });
+        if (binClear.length) trackWays = core.linesClearOf(trackWays, binClear, core.TRACK_WIDTH_MM);
         const sunk = core.carveRoads(scaled.mm, trackWays, n, { ...pieceSet, ...scaled, skip: water?.areas, heights });
         scaled.mm = sunk.mm;
         trackMask = sunk.mask;
       }
-      const extra = placed ? core.buildingTriangles(placed.buildings, scaled.mm, n, { ...pieceSet, ...scaled }) : [];
-      if (buildings) buildings.triangles = extra.length / 3;
+      // the bins first, closing the ground round them, then the buildings clear of them
+      const binTris = bins?.placed.length ? core.binTriangles(scaled.mm, n, set.widthMm, bins.cells, bins.placed) : [];
+      const binCount = binTris.length / 3;
+      const extra = binTris;
+      if (placed) {
+        const standing = binClear.length ? core.buildingsClearOf(placed.buildings, binClear) : placed.buildings;
+        for (const p of core.buildingTriangles(standing, scaled.mm, n, { ...pieceSet, ...scaled })) extra.push(p);
+        buildings.count = standing.length;
+        buildings.triangles = extra.length / 3 - binCount;
+      }
       let roads = null;
       if (ways) {
         const roadTris = core.roadTriangles(ways, scaled.mm, n, { ...pieceSet, ...scaled, levels: set.roadMm });
@@ -1301,15 +1424,20 @@ async function buildModel() {
       const { lines, wrap } = core.labelLines(centre, set, split ? piece.name : null);
       const label = lines.length ? core.bottomLabel(lines, scaled.mm, n, set.widthMm, outline, set.bearing, wrap) : null;
       const cutLabel = label?.why ? null : label;
-      let stl, top = 2 * (n - 1) ** 2;
+      const open = bins?.placed.length ? bins.cells : null;
+      let stl, top = 2 * (open ? open.reduce((s, v) => s + v, 0) : (n - 1) ** 2);
       if (cut) {
-        const mesh = core.shapeMesh(scaled.mm, cut, extra, cutLabel);
+        const mesh = core.shapeMesh(scaled.mm, cut, extra, cutLabel, open);
         stl = core.writeStl(mesh.tris);
         top = mesh.top;
       } else {
-        stl = core.terrainStl(scaled.mm, n, set.widthMm, extra, cutLabel, set.cornerMm, split ? piece.corners : null);
+        stl = core.terrainStl(scaled.mm, n, set.widthMm, extra, cutLabel, set.cornerMm, split ? piece.corners : null, open);
       }
-      return { name: piece.name, col: piece.col, row: piece.row, corners: piece.corners, stl, top, outline, scaled, set: pieceSet, buildings, roads, water, tracks, shore, label };
+      const binned = bins && {
+        placed: bins.placed.map(({ id, floorMm, groundMm, open: side }) => ({ id, floorMm, groundMm, open: side })),
+        left: bins.left, triangles: binCount,
+      };
+      return { name: piece.name, col: piece.col, row: piece.row, corners: piece.corners, stl, top, outline, scaled, set: pieceSet, buildings, roads, water, tracks, shore, label, bins: binned };
     });
     state.model = {
       set, centre, plan, pieces, zoom: z, pixel, seaZoom, seaPixel: seaZoom == null ? null : core.pixelMetres(centre.lat, seaZoom),
@@ -1318,9 +1446,12 @@ async function buildModel() {
       roads: sumRoads(pieces),
       water: sumWater(pieces),
       tracks: sumTracks(pieces),
+      bins: sumBins(pieces, set),
+      binRaiseMm,
     };
     showPieceChoice();
     showModel();
+    renderBins();
     const sea = seaZoom != null && seaZoom < z ? `, the sea floor at ${Math.round(state.model.seaPixel)} m,` : '';
     const lifted = state.model.buildings?.liftM > core.LIFTED_M
       ? ` The elevation data here holds the buildings: the ground under them reads about ${core.formatHeight(state.model.buildings.liftM, state.units)} above the open ground nearby, so the land prints lumpy under them.`
@@ -1383,6 +1514,22 @@ function sumTracks(pieces) {
   const all = pieces.map((p) => p.tracks).filter(Boolean);
   if (!all.length) return null;
   return { km: all[0].km.map((_, k) => all.reduce((s, t) => s + t.km[k], 0)) };
+}
+
+/**
+ * What came of each bin, by id: { piece, floorMm, open } where it was cut, or
+ * { why, other } where it was left out ('outside' when its centre is off the
+ * print). Null without bins.
+ */
+function sumBins(pieces, set) {
+  if (!set.bins.length) return null;
+  const each = new Map(set.bins.map((b) => [b.id, { why: 'outside' }]));
+  for (const p of pieces) {
+    if (!p.bins) continue;
+    for (const l of p.bins.left) each.set(l.id, { why: l.why, other: l.other, piece: p.name });
+    for (const b of p.bins.placed) each.set(b.id, { piece: p.name, floorMm: b.floorMm, open: b.open });
+  }
+  return each;
 }
 
 /** The preview's piece list: the whole set, then each piece. Hidden for a print in one piece. */
@@ -1637,6 +1784,145 @@ $('print-track-file').addEventListener('change', async () => {
 });
 renderTracks();
 
+// Bins: one card each, with the thing's size, the depth and where it sits.
+let nextBin = state.bins.length;
+const BIN_SIZE_MAX = 500;
+
+function binClearance() {
+  const v = Number($('print-bin-clear').value);
+  return Number.isFinite(v) && v >= 0 && v <= 5 ? v : core.BIN_CLEARANCE_MM;
+}
+
+$('print-bin-preset').append(
+  ...Object.entries(core.BIN_PRESETS).map(([k, p]) => new Option(`${p.name} (${p.heightMm} mm tall)`, k)),
+  new Option('Something else', 'custom'),
+);
+
+/**
+ * A spot for a new bin, mm from the centre: the centre if it is free, else
+ * the nearest point on a 2 mm grid that keeps 3 mm from every other bin and
+ * from the edge of the print's square.
+ */
+function freeSpot(bin) {
+  const set = printSettings(), across = set.widthMm * set.cols, down = set.widthMm * set.rows;
+  const grown = (b) => core.binRing(b, { origin: [0, 0], step: 2, clearanceMm: set.binClearMm, growMm: 1.5 });
+  const others = state.bins.map(grown);
+  const spots = [];
+  for (let y = -down / 2; y <= down / 2; y += 2) for (let x = -across / 2; x <= across / 2; x += 2) spots.push([x, y]);
+  spots.sort((a, b) => Math.hypot(...a) - Math.hypot(...b));
+  for (const [x, y] of spots) {
+    const ring = grown({ ...bin, x, y });
+    if (ring.some(([u, v]) => Math.abs(u) > across / 2 - 1.5 || Math.abs(v) > down / 2 - 1.5)) continue;
+    if (others.every((o) => core.convexApart(ring, o))) return [x, y];
+  }
+  return [0, 0];
+}
+
+$('print-bin-add').addEventListener('click', () => {
+  const key = $('print-bin-preset').value;
+  const p = core.BIN_PRESETS[key] || { name: 'Bin', shape: 'rect', lengthMm: 20, widthMm: 10, heightMm: 20 };
+  const bin = { id: nextBin++, name: p.name, shape: p.shape, lengthMm: p.lengthMm, widthMm: p.widthMm, depthMm: core.presetDepth(p), from: 'low', x: 0, y: 0, turn: 0 };
+  [bin.x, bin.y] = freeSpot(bin);
+  state.bins.push(bin);
+  binsChanged();
+});
+$('print-bin-clear').addEventListener('change', () => {
+  $('print-bin-clear').value = String(binClearance());
+  drawPrintSquare(false);
+  buildModel();
+});
+
+const BIN_WHY = {
+  outside: 'Its centre is off the print, so it is left out.',
+  edge: 'Too near the edge of the print (or a seam between pieces), so it is left out.',
+  corner: 'In a rounded corner, so it is left out.',
+};
+
+/** A bin's number field: [key, label, step, min, max]. */
+const BIN_FIELDS = [
+  ['lengthMm', 'Length, mm', 0.1, 0.5, BIN_SIZE_MAX],
+  ['widthMm', 'Width, mm', 0.1, 0.5, BIN_SIZE_MAX],
+  ['depthMm', 'Depth, mm', 0.5, 0.5, BIN_SIZE_MAX],
+  ['x', 'Right, mm', 0.5, -2000, 2000],
+  ['y', 'Up, mm', 0.5, -2000, 2000],
+  ['turn', 'Turn, °', 1, -180, 180],
+];
+
+function renderBins() {
+  const ul = $('print-bins');
+  ul.innerHTML = '';
+  ul.hidden = !state.bins.length;
+  const results = state.model?.bins;
+  for (const bin of state.bins) {
+    const li = document.createElement('li');
+    const fields = BIN_FIELDS.map(([k, label, step, min, max]) => `<label data-k="${k}"><span>${label}</span><input type="number" step="${step}" min="${min}" max="${max}" data-k="${k}"></label>`);
+    li.innerHTML = `<div class="head"><span class="swatch" style="background:${core.BIN_COLOUR}"></span>
+        <input class="name" aria-label="Bin name" maxlength="40"><button type="button" aria-label="Remove this bin" title="Remove the bin">×</button></div>
+      <div class="grid">
+        <label><span>Shape</span><select data-k="shape"><option value="rect">Rectangle</option><option value="circle">Circle</option></select></label>
+        ${fields.slice(0, 3).join('')}
+        <label><span>Depth from</span><select data-k="from">${Object.entries(core.BIN_FROM).map(([k, v]) => `<option value="${k}">${v.replace(' ground', '')}</option>`).join('')}</select></label>
+        ${fields.slice(3).join('')}
+      </div>
+      <p class="why" hidden></p>`;
+    const name = li.querySelector('.name');
+    name.value = bin.name;
+    name.addEventListener('change', () => { bin.name = name.value.trim() || 'Bin'; binsChanged(false); });
+    li.querySelector('.head button').addEventListener('click', () => {
+      state.bins = state.bins.filter((b) => b !== bin);
+      binsChanged();
+    });
+    for (const sel of li.querySelectorAll('select')) {
+      sel.value = bin[sel.dataset.k];
+      sel.addEventListener('change', () => {
+        bin[sel.dataset.k] = sel.value;
+        if (sel.dataset.k === 'shape' && sel.value === 'circle') bin.widthMm = bin.lengthMm;
+        binsChanged();
+      });
+    }
+    for (const input of li.querySelectorAll('input[type="number"]')) {
+      const k = input.dataset.k;
+      input.value = String(bin[k]);
+      input.addEventListener('change', () => {
+        const v = Number(input.value);
+        if (input.value.trim() === '' || !Number.isFinite(v) || v < Number(input.min) || v > Number(input.max)) {
+          input.value = String(bin[k]);
+          return;
+        }
+        bin[k] = v;
+        if (bin.shape === 'circle' && k === 'lengthMm') bin.widthMm = v;
+        binsChanged();
+      });
+    }
+    // a circle has one size, its diameter
+    const round = bin.shape === 'circle';
+    li.querySelector('label[data-k="lengthMm"] span').textContent = round ? 'Diameter, mm' : 'Length, mm';
+    li.querySelector('label[data-k="widthMm"]').hidden = round;
+    const result = results?.get(bin.id);
+    const other = result?.other != null ? state.bins.find((b) => b.id === result.other) : null;
+    const why = !result ? ''
+      : result.why === 'overlap' ? `Overlaps ${other ? other.name : 'another bin'}, so it is left out.`
+      : result.why ? BIN_WHY[result.why]
+      : result.open ? 'The ground dips under its floor on the low side, so that side stands open.' : '';
+    const p = li.querySelector('.why');
+    p.textContent = why;
+    p.hidden = !why;
+    ul.append(li);
+  }
+  $('print-bins-hint').textContent = !state.bins.length
+    ? 'Pick a thing and add a bin for it; it starts at the middle of the print, or as near as is free.'
+    : `Sizes are the thing's own: each bin adds the clearance to its length and width. The depth is how far the floor sits under the lowest, average or highest ground round it, so the rest of the thing stands clear. Right and up are mm from the print's centre on the model, and the turn is clockwise. Drag a bin's dot on the map to move it. Raised roads, tracks and buildings keep ${core.BIN_CLEAR_MM} mm clear of a bin, and the base grows if a floor would leave less than ${core.BIN_FLOOR_MM} mm under it.`;
+}
+
+/** After a bin is added, changed or removed: kept, listed, drawn and the model rebuilt (unless only its name changed). */
+function binsChanged(rebuild = true) {
+  saveBins();
+  renderBins();
+  drawPrintSquare(false);
+  if (rebuild) buildModel();
+}
+renderBins();
+
 // Enlarged, the preview moves into the map's place (the whole screen on a phone),
 // and the settings stay beside it. Its ResizeObserver sizes the view to fit.
 const previewHome = $('print-preview').parentElement;
@@ -1761,12 +2047,14 @@ function pieceGeometry(m) {
   // The shoreline line dark, lakes and rivers blue like the sea, sunk roads dark grey, sunk tracks in their colour, buildings in grey,
   // then raised roads darker, and raised tracks, written last, in their colour.
   const colours = new Float32Array(count * 9);
+  const binned = new THREE.Color(core.BIN_COLOUR);
   const land = new THREE.Color(0xc9b79c), sea = new THREE.Color(0x6f9bc7), built = new THREE.Color(0x9a9da3), groove = new THREE.Color(0x4a3f33), road = new THREE.Color(0x55595f), trail = new THREE.Color(core.TRACK_COLOUR);
   const n = m.set.cells, step = m.set.widthMm / (n - 1);
   const topVertices = m.top * 3;
   const firstTrack = (count - (m.tracks?.triangles || 0)) * 3;
   const firstRoad = firstTrack - (m.roads?.triangles || 0) * 3;
   const firstBuilt = firstRoad - (m.buildings?.triangles || 0) * 3;
+  const firstBin = firstBuilt - (m.bins?.triangles || 0) * 3;
   const gridIndex = (v) => (n - 1 - Math.round(pos[v * 3 + 1] / step)) * n + Math.round(pos[v * 3] / step);
   const onShore = (v) => m.shore[gridIndex(v)];
   const onWater = (v) => m.water.mask[gridIndex(v)];
@@ -1776,7 +2064,7 @@ function pieceGeometry(m) {
   const depth = m.label?.depthMm;
   const inPocket = (t) => depth && [0, 1, 2].every((k) => pos[(t * 3 + k) * 3 + 2] <= depth + 1e-4) && [0, 1, 2].some((k) => pos[(t * 3 + k) * 3 + 2] > 1e-4);
   for (let v = 0; v < count * 3; v++) {
-    const c = v >= firstTrack ? trail : v >= firstRoad ? road : v >= firstBuilt ? built
+    const c = v >= firstTrack ? trail : v >= firstRoad ? road : v >= firstBuilt ? built : v >= firstBin ? binned
       : (m.shore && v < topVertices && onShore(v)) || (v >= topVertices && inPocket(Math.floor(v / 3))) ? groove
       : m.tracks?.mask && v < topVertices && onTrack(v) ? trail
       : m.roads?.mask && v < topVertices && onRoad(v) ? road
@@ -1791,7 +2079,7 @@ function renderPrintTable() {
   if (!m) { $('print-table').innerHTML = ''; return; }
   const { set, pieces } = m;
   const split = pieces.length > 1, first = pieces[0], scaled = first.scaled;
-  const tallMm = set.baseMm + m.reliefMm;
+  const tallMm = set.baseMm + (m.binRaiseMm || 0) + m.reliefMm;
   const acrossMm = set.widthMm * set.cols, downMm = set.widthMm * set.rows;
   const scale = Math.round((set.sideKm * 1e6) / acrossMm);
   const side = (km) => core.formatSide(km, state.units);
@@ -1819,6 +2107,7 @@ function renderPrintTable() {
     ...(m.roads ? [['Roads', roadsText(m)]] : []),
     ...(m.water ? [['Lakes and rivers', waterText(m)]] : []),
     ...(m.tracks ? [['Tracks', tracksText(m)]] : []),
+    ...(m.bins ? [['Bins', binsText(m)]] : []),
     ['STL', `${split ? `${pieces.length} files in one ZIP, ` : ''}${stlMb.toFixed(1)} MB, ${triangles.toLocaleString('en-US')} triangles`],
   ];
   $('print-table').innerHTML = `<tbody>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</tbody>`;
@@ -1894,6 +2183,12 @@ function waterText(m) {
   return parts.length ? parts.join('; ') : 'None of the kinds printed in OpenStreetMap here, or none big enough to show';
 }
 
+function binsText({ bins, binRaiseMm }) {
+  const cut = [...bins.values()].filter((b) => b.why == null).length, left = bins.size - cut;
+  const raise = binRaiseMm ? `; the base is ${binRaiseMm.toFixed(1)} mm thicker, so ${core.BIN_FLOOR_MM} mm stays under the deepest floor` : '';
+  return `${cut} cut${left ? `, ${left} left out (see the Bins tab)` : ''}${raise}`;
+}
+
 function tracksText({ tracks: t, set }) {
   const length = (km) => (state.units === 'imperial' ? `${(km / 1.609344).toFixed(1)} mi` : `${km.toFixed(1)} km`);
   return set.tracks.map((track, k) => `${escapeHtml(track.name)}: ${t.km[k] < 0.005 ? 'not on the print'
@@ -1930,7 +2225,7 @@ $('print-kml').addEventListener('click', () => {
     centre: m.centre,
     set: m.set,
     // a set's label differs piece to piece, so only a print in one piece keeps it
-    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.lowM, highM: m.highM, reliefMm: m.reliefMm, triangles, buildings: m.buildings, roads: m.roads, water: m.water && { lakesKm2: m.water.lakesKm2, wideKm2: m.water.wideKm2, riverKm: m.water.riverKm, readAt: m.water.readAt }, label: m.pieces.length === 1 ? m.pieces[0].label : null },
+    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.lowM, highM: m.highM, reliefMm: m.reliefMm, binRaiseMm: m.binRaiseMm, triangles, buildings: m.buildings, roads: m.roads, water: m.water && { lakesKm2: m.water.lakesKm2, wideKm2: m.water.wideKm2, riverKm: m.water.riverKm, readAt: m.water.readAt }, label: m.pieces.length === 1 ? m.pieces[0].label : null },
     stlFile: stlFileName(m),
   });
   download(printFileName(m, 'kml'), kml, 'application/vnd.google-earth.kml+xml');
@@ -2076,6 +2371,11 @@ $('print-file').addEventListener('change', async () => {
   state.tracks = set.tracks.map((t) => ({ ...t, id: nextTrack++ }));
   saveTracks();
   renderTracks();
+  // and its bins those made here
+  $('print-bin-clear').value = String(set.binClearMm);
+  state.bins = set.bins.map((b) => ({ ...b, id: nextBin++ }));
+  saveBins();
+  renderBins();
   setPrintCentre(centre);
   status('print', `Opened ${file.name}. Building the same model.`);
 });

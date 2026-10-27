@@ -158,6 +158,7 @@
       <div class="subtabs" role="tablist" aria-label="Settings">
         <button id="print-tab-shape" role="tab" aria-selected="true" aria-controls="print-shape-panel" data-subtab="shape">Shape</button>
         <button id="print-tab-features" role="tab" aria-selected="false" aria-controls="print-features-panel" data-subtab="features" tabindex="-1">Features</button>
+        <button id="print-tab-bins" role="tab" aria-selected="false" aria-controls="print-bins-panel" data-subtab="bins" tabindex="-1">Bins</button>
       </div>
       <div id="print-shape-panel" class="subpane" role="tabpanel" aria-labelledby="print-tab-shape">
         <div class="row">
@@ -389,6 +390,24 @@
           <textarea id="print-text" rows="3" placeholder="Up to 3 lines of 30 letters" spellcheck="false"></textarea>
         </div>
         <p id="print-label-hint" class="hint" hidden></p>
+      </div>
+      <div id="print-bins-panel" class="subpane" role="tabpanel" aria-labelledby="print-tab-bins" hidden>
+        <p class="hint">Holes cut down into the top to stand things in, such as SD cards or batteries, so each stands part way out, easy to grab. Each has a flat floor, its depth measured down from the lowest, average or highest ground under it.</p>
+        <div class="row">
+          <div class="field">
+            <label for="print-bin-preset">Add a bin for</label>
+            <select id="print-bin-preset"></select>
+          </div>
+          <div class="field grow-0">
+            <button id="print-bin-add" class="add" type="button">Add bin</button>
+          </div>
+          <div class="field">
+            <label for="print-bin-clear">Clearance, mm</label>
+            <input id="print-bin-clear" type="number" step="0.1" min="0" max="5" value="0.4" title="Added to each bin's length and width, so the thing slides in after printing">
+          </div>
+        </div>
+        <ul id="print-bins" class="bins" hidden></ul>
+        <p id="print-bins-hint" class="hint"></p>
       </div>
       <div class="row">
         <button id="print-run" class="primary">Build model</button>

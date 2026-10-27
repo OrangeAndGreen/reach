@@ -116,7 +116,7 @@ test('a road in a cutting still stands over the banks beside it', () => {
 
 test('a print KML keeps the roads setting and the length of each class printed', () => {
   const centre = { name: 'Chicago Loop', lat: 41.88, lon: -87.63 };
-  const set = { sideKm: 10, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1, baseMm: 3, seaFloorM: 0, depthStretch: 1, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: { motorway: 1.2, trunk: -0.8, primary: 0, secondary: -0.4 }, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks: [] };
+  const set = { sideKm: 10, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1, baseMm: 3, seaFloorM: 0, depthStretch: 1, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: { motorway: 1.2, trunk: -0.8, primary: 0, secondary: -0.4 }, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks: [], bins: [], binClearMm: 0.4 };
   const model = { zoom: 13, pixelM: 14, lowM: 170, highM: 200, reliefMm: 0.4, triangles: 90000,
     roads: { count: 40, km: { motorway: 31.24, primary: 88 }, triangles: 40000, readAt: '2026-10-22' } };
   const kml = core.printKml({ centre, set, model });

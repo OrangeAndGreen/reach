@@ -50,7 +50,7 @@ test('a print KML keeps each track, its line in full and its level', () => {
     { name: 'Lion Head <winter>', lines: [[[-71.2851234, 44.2591234], [-71.2950001, 44.2650002]]], levelMm: 0.8 },
     { name: 'Gulfside', lines: [[[-71.31, 44.28], [-71.3, 44.29]], [[-71.3, 44.29], [-71.29, 44.3]]], levelMm: -1.2 },
   ];
-  const set = { sideKm: 20, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks };
+  const set = { sideKm: 20, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks, bins: [], binClearMm: 0.4 };
   const text = core.printKml({ centre, set });
   assert.match(text, /<Style id="track">/);
   assert.match(text, /<Data name="tracks">.*<value>2<\/value>/);
@@ -58,7 +58,7 @@ test('a print KML keeps each track, its line in full and its level', () => {
   // and the same file imports as tracks, without the print's own outline
   assert.deepEqual(core.parseTrackKml(text).map((t) => t.name), ['Lion Head <winter>', 'Gulfside']);
   // a file from before tracks has none
-  const old = core.printKml({ centre, set: { ...set, tracks: [] } }).replace(/\s*<Data name="tracks">.*<\/Data>/, '');
+  const old = core.printKml({ centre, set: { ...set, tracks: [], bins: [], binClearMm: 0.4 } }).replace(/\s*<Data name="tracks">.*<\/Data>/, '');
   assert.deepEqual(core.parsePrintKml(old).set.tracks, []);
   assert.throws(() => core.parsePrintKml(text.replace('<value>-1.2</value>', '<value>40</value>')), /Gulfside/);
 });

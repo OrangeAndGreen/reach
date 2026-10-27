@@ -26,12 +26,24 @@ Three tools on one map:
   which grows with the square root of how flat it is (Mt Washington's 20 km
   ×1.5, Boston's ×6, at most ×20), with a button to use it. The default is the 20 km around Mt Washington:
   120 × 120 × 17.6 mm at ×1.5. **Download KML** saves the outline for Google
-  Earth along with every setting (centre, size, width, detail, stretch, base, sea floor, shoreline, label and its text, corners, shape, turn, and each track printed, as its own line with its level)
+  Earth along with every setting (centre, size, width, detail, stretch, base, sea floor, shoreline, label and its text, corners, shape, turn, each track printed, as its own line with its level, and each bin, as a pin at its centre)
   and what came of them (tile zoom, metres per pixel, lowest and highest point,
   model height, scale, triangle count, STL file name). A KML from before the per-class levels opens with its roads raised as they were and its water all sunk its one depth. **Open KML** reads one
   back and builds the same STL again. **Download map image** saves the map
   layer on show (Terrain or Streets) cropped to the print (turned to match, and clear outside its shape), as a PNG of up to
   2,048 px with the map's credit in the corner.
+- **Bins**, on the Print tab's third settings tab: holes cut straight down
+  into the top to stand things in, such as SD cards, AA or 18650 batteries,
+  so each stands part way out and is easy to grab. Pick a thing (or type your
+  own size), and a bin is its footprint plus a clearance (0.4 mm), as a
+  rectangle or a circle, turned any way. The depth is measured down from the
+  lowest, average or highest ground under the bin, so on a slope it can be
+  deep everywhere or open on its low side. The floor is flat and the walls
+  upright, and the base grows when a floor would leave less than 1.5 mm under
+  it. Each bin is outlined on the map, with a dot to drag it by. Raised roads,
+  tracks and buildings keep 1 mm clear of a bin. A bin too near the edge, in a
+  rounded corner, over another or across a seam between pieces is left out,
+  and its card says why.
 
 Reach keeps what it reads between visits, in the browser's IndexedDB, so a
 place you come back to costs no new download: the elevation tiles (up to 3,000,
