@@ -1977,9 +1977,9 @@ function renderBins() {
       state.bins.splice(state.bins.indexOf(bin), 1, ...splitBin(bin));
       binsChanged();
     });
-    // a ring's radius stays on the suggestion through a change, if it was on it
-    const change = (apply) => {
-      const follow = bin.pattern === 'ring' && bin.radiusMm === suggestedRadius(bin);
+    // a ring's radius stays on the suggestion through a change, if it was on it, unless the change is to the radius
+    const change = (apply, typed = null) => {
+      const follow = typed !== 'radiusMm' && bin.pattern === 'ring' && bin.radiusMm === suggestedRadius(bin);
       apply();
       startPattern(bin);
       if (follow && bin.pattern === 'ring') bin.radiusMm = suggestedRadius(bin);
@@ -2007,7 +2007,7 @@ function renderBins() {
         change(() => {
           bin[k] = v;
           if (bin.shape === 'circle' && k === 'lengthMm') bin.widthMm = v;
-        });
+        }, k);
       });
     }
     // a ring's or grid's own fields show only for it, as Split does
