@@ -390,6 +390,20 @@
           <textarea id="print-text" rows="3" placeholder="Up to 3 lines of 30 letters" spellcheck="false"></textarea>
         </div>
         <p id="print-label-hint" class="hint" hidden></p>
+        <div class="row">
+          <div class="field">
+            <label for="print-balance">Balance notch</label>
+            <select id="print-balance">
+              <option value="none" selected>None</option>
+              <option value="on">Under the centre of mass</option>
+            </select>
+          </div>
+          <div id="print-infill-field" class="field" hidden>
+            <label for="print-infill">Infill you'll print at</label>
+            <select id="print-infill"></select>
+          </div>
+        </div>
+        <p id="print-balance-hint" class="hint" hidden>A cone cut up into the underside, its walls 30° from upright, so it prints without support and a pencil point reaches its tip. It goes up past the centre of mass where the model is thick enough, so the print hangs from the point and settles level; where it can't, it balances only with a steady hand. The walls and skins weigh more than the infill, so the centre of mass moves with the infill: set the slicer's. Any label moves aside to clear it.</p>
       </div>
       <div id="print-bins-panel" class="subpane" role="tabpanel" aria-labelledby="print-tab-bins" hidden>
         <p class="hint">Holes cut down into the top to stand things in, such as SD cards or batteries, so each stands part way out, easy to grab. Each has a flat floor, its depth measured down from the lowest, average or highest ground under it.</p>

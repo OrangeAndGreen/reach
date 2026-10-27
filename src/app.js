@@ -783,6 +783,8 @@ function printSettings() {
     ...shoreSetting(levelOf($('print-shore'))),
     label: ['on', 'both'].includes($('print-label').value),
     labelText: ['text', 'both'].includes($('print-label').value) ? $('print-text').value : '',
+    balance: $('print-balance').value === 'on',
+    infillPercent: Number($('print-infill').value),
     cornerMm: Number($('print-corner').value),
     shape: $('print-shape').value,
     aspect: Number($('print-aspect').value),
@@ -1422,22 +1424,30 @@ async function buildModel() {
         tracks = { km, triangles: trackTris.length / 3, mask: trackMask };
       }
       const { lines, wrap } = core.labelLines(centre, set, split ? piece.name : null);
-      const label = lines.length ? core.bottomLabel(lines, scaled.mm, n, set.widthMm, outline, set.bearing, wrap) : null;
-      const cutLabel = label?.why ? null : label;
+      const labelFor = (notch) => (lines.length ? core.bottomLabel(lines, scaled.mm, n, set.widthMm, outline, set.bearing, wrap, notch) : null);
+      // With a notch, the label waits for the centre of mass, which the mesh builders find from the solid.
+      let label = set.balance ? null : labelFor(null), balance = null;
+      const under = !set.balance ? (label?.why ? null : label) : (moments) => {
+        const mass = core.centreOfMass(moments, set.infillPercent / 100);
+        balance = core.balanceNotch(mass, scaled.mm, n, set.widthMm, { ring: cut?.ring, bins: bins?.placed });
+        const notch = balance.why ? null : balance;
+        label = labelFor(notch);
+        return { label: label?.why ? null : label, notch };
+      };
       const open = bins?.placed.length ? bins.cells : null;
       let stl, top = 2 * (open ? open.reduce((s, v) => s + v, 0) : (n - 1) ** 2);
       if (cut) {
-        const mesh = core.shapeMesh(scaled.mm, cut, extra, cutLabel, open);
+        const mesh = core.shapeMesh(scaled.mm, cut, extra, under, open);
         stl = core.writeStl(mesh.tris);
         top = mesh.top;
       } else {
-        stl = core.terrainStl(scaled.mm, n, set.widthMm, extra, cutLabel, set.cornerMm, split ? piece.corners : null, open);
+        stl = core.terrainStl(scaled.mm, n, set.widthMm, extra, under, set.cornerMm, split ? piece.corners : null, open);
       }
       const binned = bins && {
         placed: bins.placed.map(({ id, floorMm, groundMm, open: side }) => ({ id, floorMm, groundMm, open: side })),
         left: bins.left, triangles: binCount,
       };
-      return { name: piece.name, col: piece.col, row: piece.row, corners: piece.corners, stl, top, outline, scaled, set: pieceSet, buildings, roads, water, tracks, shore, label, bins: binned };
+      return { name: piece.name, col: piece.col, row: piece.row, corners: piece.corners, stl, top, outline, scaled, set: pieceSet, buildings, roads, water, tracks, shore, label, balance, bins: binned };
     });
     state.model = {
       set, centre, plan, pieces, zoom: z, pixel, seaZoom, seaPixel: seaZoom == null ? null : core.pixelMetres(centre.lat, seaZoom),
@@ -1619,6 +1629,15 @@ labelPitches();
 $('print-width').addEventListener('change', () => { labelPitches(); showShapeControls(); drawPrintSquare(false); buildModel(); });
 levelInput($('print-shore'), () => { $('print-shore-hint').hidden = !levelOf($('print-shore')); buildModel(); });
 $('print-label').addEventListener('change', () => { showLabelControls(); buildModel(); });
+for (const v of core.INFILL_STOPS) $('print-infill').append(new Option(`${v}%`, v));
+$('print-infill').value = String(core.INFILL_PERCENT);
+$('print-balance').addEventListener('change', () => { showBalanceControls(); buildModel(); });
+$('print-infill').addEventListener('change', buildModel);
+function showBalanceControls() {
+  const on = $('print-balance').value === 'on';
+  $('print-infill-field').hidden = !on;
+  $('print-balance-hint').hidden = !on;
+}
 $('print-text').addEventListener('input', showLabelControls);
 $('print-text').addEventListener('change', buildModel);
 function showLabelControls() {
@@ -2103,6 +2122,7 @@ function renderPrintTable() {
     ...(set.seaFloorM > 0 ? [['Sea floor', seaFloorText(set, scaled)]] : []),
     ...(set.shoreMm > 0 ? [['Shoreline', shoreText(set, pieces.some((p) => p.shore.includes(1)))]] : []),
     ...(first.label ? [['Label underneath', `${split ? `On ${first.name}: ` : ''}${labelText(first.label)}`]] : []),
+    ...(first.balance ? [['Balance notch', `${split ? `On ${first.name}: ` : ''}${balanceText(first.balance, set, first.outline)}`]] : []),
     ...(m.buildings ? [['Buildings', buildingsText(m)]] : []),
     ...(m.roads ? [['Roads', roadsText(m)]] : []),
     ...(m.water ? [['Lakes and rivers', waterText(m)]] : []),
@@ -2153,6 +2173,17 @@ function shoreText(set, coast) {
 function labelText(label) {
   if (label.why) return `None: ${label.why}`;
   return `${label.lines.map(escapeHtml).join(' / ')} under a north arrow, letters ${(label.pxMm * 7).toFixed(1)} mm tall, ${label.depthMm.toFixed(1)} mm deep`;
+}
+
+function balanceText(b, set, outline) {
+  if (b.why) return `None: ${b.why}`;
+  const [mx, my] = outline ? outline.centre : [set.widthMm / 2, set.widthMm / 2];
+  const off = (v, pos, neg) => (Math.abs(v) < 0.05 ? '' : `${Math.abs(v).toFixed(1)} mm ${v > 0 ? pos : neg}`);
+  const where = [off(b.y - my, 'up', 'down'), off(b.x - mx, 'right', 'left')].filter(Boolean).join(' and ');
+  const steady = b.aboveMm >= 0
+    ? `its tip ${b.aboveMm.toFixed(1)} mm over the centre of mass, so it hangs level from a pencil point`
+    : `its tip ${(-b.aboveMm).toFixed(1)} mm under the centre of mass, as high as leaves ${core.NOTCH_ROOF_MM} mm over it, so it balances only with a steady hand`;
+  return `${b.depthMm.toFixed(1)} mm deep and ${(2 * b.r).toFixed(1)} mm across, ${where ? `${where} from the middle` : 'in the middle'} as seen from the top, at ${set.infillPercent}% infill; ${steady}`;
 }
 
 function buildingsText({ buildings: b, set }) {
@@ -2225,7 +2256,7 @@ $('print-kml').addEventListener('click', () => {
     centre: m.centre,
     set: m.set,
     // a set's label differs piece to piece, so only a print in one piece keeps it
-    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.lowM, highM: m.highM, reliefMm: m.reliefMm, binRaiseMm: m.binRaiseMm, triangles, buildings: m.buildings, roads: m.roads, water: m.water && { lakesKm2: m.water.lakesKm2, wideKm2: m.water.wideKm2, riverKm: m.water.riverKm, readAt: m.water.readAt }, label: m.pieces.length === 1 ? m.pieces[0].label : null },
+    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.lowM, highM: m.highM, reliefMm: m.reliefMm, binRaiseMm: m.binRaiseMm, triangles, buildings: m.buildings, roads: m.roads, water: m.water && { lakesKm2: m.water.lakesKm2, wideKm2: m.water.wideKm2, riverKm: m.water.riverKm, readAt: m.water.readAt }, label: m.pieces.length === 1 ? m.pieces[0].label : null, balance: m.pieces.length === 1 ? m.pieces[0].balance : null },
     stlFile: stlFileName(m),
   });
   download(printFileName(m, 'kml'), kml, 'application/vnd.google-earth.kml+xml');
@@ -2348,6 +2379,9 @@ $('print-file').addEventListener('change', async () => {
   $('print-text').value = set.labelText;
   $('print-label').value = set.labelText.trim() ? (set.label ? 'both' : 'text') : set.label ? 'on' : 'none';
   showLabelControls();
+  $('print-balance').value = set.balance ? 'on' : 'none';
+  choose('print-infill', set.infillPercent, `${set.infillPercent}%`);
+  showBalanceControls();
   choose('print-corner', set.cornerMm, set.cornerMm ? `Rounded ${set.cornerMm} mm` : 'Square');
   $('print-shape').value = set.shape;
   choose('print-aspect', set.aspect, `${set.aspect} : 1`);

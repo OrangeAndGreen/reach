@@ -497,7 +497,7 @@ test('terrain STL faces outward: top normals point up, bottom down', () => {
 
 test('a print KML carries the square, the settings and the model figures', () => {
   const centre = { name: 'Mount Washington, New Hampshire', lat: 44.2706, lon: -71.3033 };
-  const set = { sideKm: 20, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks: [], bins: [], binClearMm: 0.4 };
+  const set = { sideKm: 20, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: false, labelText: '', balance: false, infillPercent: 15, cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks: [], bins: [], binClearMm: 0.4 };
   const model = { zoom: 12, pixelM: 27.8, lowM: 410, highM: 1916, reliefMm: 13.55, triangles: 81590 };
   const kml = core.printKml({ centre, set, model, stlFile: 'reach-mount-washington-20km.stl', made: new Date('2026-10-15T12:00:00Z') });
   assert.match(kml, /<Data name="heightStretch"><displayName>Height stretch \(x\)<\/displayName><value>1.5<\/value><\/Data>/);
@@ -519,7 +519,7 @@ test('a print KML carries the square, the settings and the model figures', () =>
 
 test('a print KML round-trips awkward names, and works without a model', () => {
   const centre = { name: 'Rock & "Roll" <Hills>', lat: -33.9, lon: 18.4 };
-  const set = { sideKm: 5, widthMm: 80, cells: 81, pitchMm: 1, exaggeration: 10, baseMm: 2, seaFloorM: 1000, depthStretch: 4, shoreMm: 0.8, shoreRidge: false, label: false, labelText: '', cornerMm: 0, shape: 'rectangle', aspect: 5, bearing: 29, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks: [], bins: [], binClearMm: 0.4 };
+  const set = { sideKm: 5, widthMm: 80, cells: 81, pitchMm: 1, exaggeration: 10, baseMm: 2, seaFloorM: 1000, depthStretch: 4, shoreMm: 0.8, shoreRidge: false, label: false, labelText: '', balance: false, infillPercent: 15, cornerMm: 0, shape: 'rectangle', aspect: 5, bearing: 29, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks: [], bins: [], binClearMm: 0.4 };
   const kml = core.printKml({ centre, set });
   assert.match(kml, /Rock &amp; &quot;Roll&quot; &lt;Hills&gt;/);
   assert.doesNotMatch(kml, /metresPerPixel/);
@@ -735,7 +735,7 @@ test('each building is a closed solid standing on the terrain, courtyards and al
 
 test('a print KML keeps the building settings and what came of them', () => {
   const centre = { name: 'Sunny Isles Beach', lat: 25.94, lon: -80.12 };
-  const set = { sideKm: 1, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1, baseMm: 3, seaFloorM: 0, depthStretch: 1, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 10, shape: 'square', aspect: 2, bearing: 0, buildings: true, buildingDefaultM: 10, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks: [], bins: [], binClearMm: 0.4 };
+  const set = { sideKm: 1, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1, baseMm: 3, seaFloorM: 0, depthStretch: 1, shoreMm: 0, shoreRidge: false, label: false, labelText: '', balance: false, infillPercent: 15, cornerMm: 10, shape: 'square', aspect: 2, bearing: 0, buildings: true, buildingDefaultM: 10, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks: [], bins: [], binClearMm: 0.4 };
   const model = { zoom: 14, pixelM: 8.6, lowM: 0, highM: 4, reliefMm: 0.5, triangles: 5000,
     buildings: { count: 111, tagged: 59, inData: 1, tallestM: 203.4, readAt: '2026-10-16' } };
   const kml = core.printKml({ centre, set, model });
@@ -840,11 +840,13 @@ test('a labelled print is still one closed solid, the letters cut up into its bo
 
 test('a print KML keeps the label setting and what was cut', () => {
   const centre = { name: 'Mount Washington', lat: 44.2706, lon: -71.3033 };
-  const set = { sideKm: 20, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: true, labelText: 'Our first hike\nAugust 2026 & <3', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks: [], bins: [], binClearMm: 0.4 };
+  const set = { sideKm: 20, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: true, labelText: 'Our first hike\nAugust 2026 & <3', balance: true, infillPercent: 20, cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks: [], bins: [], binClearMm: 0.4 };
   const label = { lines: ['44.2706°N 71.3033°W', '20 × 20 KM', 'VERTICAL ×1.5'], pxMm: 0.9, depthMm: 0.6 };
-  const kml = core.printKml({ centre, set, model: { zoom: 12, pixelM: 27.8, lowM: 410, highM: 1916, reliefMm: 13.55, triangles: 1, label } });
+  const kml = core.printKml({ centre, set, model: { zoom: 12, pixelM: 27.8, lowM: 410, highM: 1916, reliefMm: 13.55, triangles: 1, label, balance: { x: 61.234, y: 58.5, r: 4, depthMm: 7.2, massZ: 5.1, aboveMm: 2.1 } } });
   assert.match(kml, /<Data name="labelText">.*<value>44.2706°N 71.3033°W \/ 20 × 20 KM \/ VERTICAL ×1.5<\/value>/);
   assert.match(kml, /<Data name="labelLetterMm">.*<value>6.3<\/value>/);
+  assert.match(kml, /<Data name="notchDepthMm">.*<value>7.2<\/value>/);
+  assert.match(kml, /<Data name="notchXMm">.*<value>61.23<\/value>/);
   assert.deepEqual(core.parsePrintKml(kml).set, set);
 });
 
