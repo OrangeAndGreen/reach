@@ -1117,7 +1117,7 @@ function parseBins(text) {
       if (v[k] == null || !Number.isFinite(x) || x < lo || x > hi) throw new Error(`the bin "${v.binName}"'s ${k} is missing or out of range`);
       return x;
     };
-    if (!['rect', 'circle'].includes(v.binShape)) throw new Error(`the bin "${v.binName}"'s shape is not one Reach cuts`);
+    if (!['rect', 'circle', 'oval'].includes(v.binShape)) throw new Error(`the bin "${v.binName}"'s shape is not one Reach cuts`);
     bins.push({
       name: v.binName || 'Bin', shape: v.binShape,
       lengthMm: num('binLengthMm', 0.1, 1000), widthMm: num('binWidthMm', 0.1, 1000), depthMm: num('binDepthMm', 0.1, 500),
@@ -1960,7 +1960,7 @@ export function shapeMesh(zMm, shape, extra = [], label = null, open = null) {
 
 /**
  * Things to stand in a bin, upright: the footprint (lengthMm by widthMm; a
- * circle's lengthMm is its diameter) and how tall each stands.
+ * circle's lengthMm is its diameter, an oval's its long axis) and how tall each stands.
  */
 export const BIN_PRESETS = {
   sd: { name: 'SD card', shape: 'rect', lengthMm: 24, widthMm: 2.1, heightMm: 32 },
@@ -1985,7 +1985,7 @@ export const BIN_CLEAR_MM = 1;
 export const presetDepth = (preset) => Math.round(preset.heightMm / 2);
 
 /**
- * A bin's outline, counter-clockwise, in a piece's model mm. origin is where
+ * A bin's outline (rect, circle or oval), counter-clockwise, in a piece's model mm. origin is where
  * the set's centre falls in the piece, and the bin's x and y are mm right and
  * up from it; turn is degrees clockwise. The thing's size gets clearanceMm
  * added, and growMm more each way. Sides are split every step at most, so
@@ -2000,6 +2000,12 @@ export function binRing(bin, { origin, step, clearanceMm = BIN_CLEARANCE_MM, gro
     return Array.from({ length: parts }, (_, k) => place([r * Math.cos((2 * Math.PI * k) / parts), r * Math.sin((2 * Math.PI * k) / parts)]));
   }
   const a = (bin.lengthMm + clearanceMm) / 2 + growMm, b = (bin.widthMm + clearanceMm) / 2 + growMm;
+  if (bin.shape === 'oval') {
+    // an ellipse, length by width; Ramanujan's perimeter sets how finely it is split
+    const h = ((a - b) / (a + b)) ** 2, around = Math.PI * (a + b) * (1 + (3 * h) / (10 + Math.sqrt(4 - 3 * h)));
+    const parts = Math.max(32, Math.ceil(around / step));
+    return Array.from({ length: parts }, (_, k) => place([a * Math.cos((2 * Math.PI * k) / parts), b * Math.sin((2 * Math.PI * k) / parts)]));
+  }
   return densify([[-a, -b], [a, -b], [a, b], [-a, b]].map(place), step);
 }
 

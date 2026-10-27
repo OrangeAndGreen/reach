@@ -1859,7 +1859,7 @@ function renderBins() {
     li.innerHTML = `<div class="head"><span class="swatch" style="background:${core.BIN_COLOUR}"></span>
         <input class="name" aria-label="Bin name" maxlength="40"><button type="button" aria-label="Remove this bin" title="Remove the bin">×</button></div>
       <div class="grid">
-        <label><span>Shape</span><select data-k="shape"><option value="rect">Rectangle</option><option value="circle">Circle</option></select></label>
+        <label><span>Shape</span><select data-k="shape"><option value="rect">Rectangle</option><option value="circle">Circle</option><option value="oval">Oval</option></select></label>
         ${fields.slice(0, 3).join('')}
         <label><span>Depth from</span><select data-k="from">${Object.entries(core.BIN_FROM).map(([k, v]) => `<option value="${k}">${v.replace(' ground', '')}</option>`).join('')}</select></label>
         ${fields.slice(3).join('')}

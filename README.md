@@ -36,7 +36,7 @@ Three tools on one map:
   into the top to stand things in, such as SD cards, AA or 18650 batteries,
   so each stands part way out and is easy to grab. Pick a thing (or type your
   own size), and a bin is its footprint plus a clearance (0.4 mm), as a
-  rectangle or a circle, turned any way. The depth is measured down from the
+  rectangle, a circle or an oval (length by width), turned any way. The depth is measured down from the
   lowest, average or highest ground under the bin, so on a slope it can be
   deep everywhere or open on its low side. The floor is flat and the walls
   upright, and the base grows when a floor would leave less than 1.5 mm under

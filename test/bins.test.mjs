@@ -52,6 +52,20 @@ test('a turned bin and a round one, side by side, stay closed', () => {
   assert.ok(volume(tris) > 0);
 });
 
+test('an oval bin takes out an ellipse, turned, and leaves the print closed', () => {
+  const n = 121, w = 60;
+  const oval = { shape: 'oval', lengthMm: 30, widthMm: 12, depthMm: 5, x: 0, y: 0, turn: 40 };
+  const { fit, tris } = squareWithBins(new Array(n * n).fill(10), n, w, [oval]);
+  assert.deepEqual(fit.placed, [0]);
+  assert.ok(core.isClosed(tris));
+  // 30.4 x 12.4 with the clearance, 5 deep; the ring's chords lose a sliver
+  near(volume(tris), 60 * 60 * 10 - Math.PI * 15.2 * 6.2 * 5, 3);
+  const ring = core.binRing(oval, { origin: [0, 0], step: 1 });
+  const far = Math.max(...ring.map(([x, y]) => Math.hypot(x, y))), close = Math.min(...ring.map(([x, y]) => Math.hypot(x, y)));
+  near(far, 15.2, 1e-9);
+  near(close, 6.2, 0.01);
+});
+
 test('two bins close enough to share the ground between them stay closed', () => {
   const n = 101, w = 50;
   const bins = [{ ...sd, y: -2 }, { ...sd, y: 4 }];
@@ -133,11 +147,12 @@ test('a print KML keeps each bin, as a pin at its centre', () => {
   const bins = [
     { name: 'SD card <1>', shape: 'rect', lengthMm: 24, widthMm: 2.1, depthMm: 16, from: 'low', x: -20.5, y: 10, turn: 15 },
     { name: 'AA battery', shape: 'circle', lengthMm: 14.5, widthMm: 14.5, depthMm: 25, from: 'mid', x: 0, y: 0, turn: 0 },
+    { name: 'Drone battery', shape: 'oval', lengthMm: 40, widthMm: 22, depthMm: 15, from: 'high', x: 25, y: -20, turn: -30 },
   ];
   const set = { sideKm: 20, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: false, labelText: '', cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks: [], bins, binClearMm: 0.3 };
   const model = { zoom: 12, pixelM: 27.8, lowM: 410, highM: 1916, reliefMm: 13.55, triangles: 81590, binRaiseMm: 2 };
   const text = core.printKml({ centre, set, model });
-  assert.match(text, /<Data name="bins">.*<value>2<\/value>/);
+  assert.match(text, /<Data name="bins">.*<value>3<\/value>/);
   assert.match(text, /<Data name="modelHeightMm">.*<value>18.55<\/value>/);
   assert.match(text, /<name>Bin: AA battery<\/name>.*<coordinates>-71.3033,44.2706,0<\/coordinates>/);
   assert.deepEqual(core.parsePrintKml(text).set, set);
