@@ -27,6 +27,14 @@ jobs:
         with:
           node-version: 22
       - run: npm test
+      # Pages lets browsers keep files 10 minutes, so each deploy names its code
+      # afresh: the page loads app.js?v=<commit>, and each import its own file the same way.
+      - name: Tag the code with the commit
+        run: |
+          V="${GITHUB_SHA::8}"
+          sed -i -E "s#(src|href)=\"(app\.js|style\.css)\"#\1=\"\2?v=$V\"#" src/index.html
+          sed -i -E "s#from '\./([a-z]+\.js)'#from './\1?v=$V'#" src/*.js
+          grep -c "?v=$V" src/index.html src/*.js
       - uses: actions/upload-pages-artifact@v3
         with:
           path: src
