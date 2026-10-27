@@ -50,7 +50,7 @@ test('a print KML keeps each track, its line in full and its level', () => {
     { name: 'Lion Head <winter>', lines: [[[-71.2851234, 44.2591234], [-71.2950001, 44.2650002]]], levelMm: 0.8 },
     { name: 'Gulfside', lines: [[[-71.31, 44.28], [-71.3, 44.29]], [[-71.3, 44.29], [-71.29, 44.3]]], levelMm: -1.2 },
   ];
-  const set = { sideKm: 20, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: false, labelText: '', balance: false, infillPercent: 15, cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks, bins: [], binClearMm: 0.4 };
+  const set = { sideKm: 20, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 1.5, baseMm: 3, seaFloorM: 0, depthStretch: 1.5, shoreMm: 0, shoreRidge: false, label: false, labelText: '', balance: false, infillPercent: 15, cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 1, rows: 1, tracks, waters: [], bins: [], binClearMm: 0.4 };
   const text = core.printKml({ centre, set });
   assert.match(text, /<Style id="track">/);
   assert.match(text, /<Data name="tracks">.*<value>2<\/value>/);

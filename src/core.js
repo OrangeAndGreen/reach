@@ -902,6 +902,7 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ...Object.keys(ROAD_CLASSES).map((cls) => [`${cls}Mm`, `${cap(cls)} roads from OpenStreetMap (mm up, negative sunk, 0 for none)`, set.roadMm?.[cls] ?? 0]),
     ...Object.entries(WATER_KEYS).map(([kind, k]) => [k, `${WATER_KINDS[kind]} from OpenStreetMap (mm up, negative sunk, 0 for none)`, set.waterMm?.[kind] ?? 0]),
     ['tracks', 'Tracks of your own (each its own placemark, with its level in mm up, negative sunk)', set.tracks?.length ?? 0],
+    ['waters', 'Water of your own (each its own placemark, with its level in mm up, negative sunk)', set.waters?.length ?? 0],
     ['bins', 'Bins cut into the top (each its own placemark, at its centre)', set.bins?.length ?? 0],
     ['binClearanceMm', 'Bin clearance added to the length and width (mm)', set.binClearMm ?? BIN_CLEARANCE_MM],
     ['piecesAcross', 'Pieces across (each one model width)', cols],
@@ -1003,6 +1004,11 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
   const trackPlacemarks = (set.tracks || []).map((t) => `  <Placemark><name>${escapeXml(t.name)}</name><styleUrl>#track</styleUrl><ExtendedData><Data name="trackMm"><value>${t.levelMm}</value></Data></ExtendedData><MultiGeometry>${t.lines
     .map((line) => `<LineString><tessellate>1</tessellate><coordinates>${line.map(([lon, lat]) => `${lon},${lat},0`).join(' ')}</coordinates></LineString>`).join('')}</MultiGeometry></Placemark>
 `).join('');
+  // each area of water as its own polygons, in full as the tracks are
+  const ringText = (ring) => [...ring, ring[0]].map(([lon, lat]) => `${lon},${lat},0`).join(' ');
+  const waterPlacemarks = (set.waters || []).map((w) => `  <Placemark><name>${escapeXml(w.name)}</name><styleUrl>#water</styleUrl><ExtendedData><Data name="kmlWaterMm"><value>${w.levelMm}</value></Data></ExtendedData><MultiGeometry>${w.rings
+    .map((ring) => `<Polygon><outerBoundaryIs><LinearRing><coordinates>${ringText(ring)}</coordinates></LinearRing></outerBoundaryIs></Polygon>`).join('')}</MultiGeometry></Placemark>
+`).join('');
   // each bin a pin at its centre, its size and place on the model kept with it
   const mid = acrossMm / 2;
   const binPlacemarks = (set.bins || []).map((bin) => {
@@ -1017,7 +1023,8 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
 <Document>
   <name>${escapeXml(`Reach print: ${centre.name}, ${set.sideKm} km`)}</name>
   <Style id="square"><LineStyle><color>ff24548f</color><width>3</width></LineStyle><PolyStyle><color>2224548f</color></PolyStyle></Style>${set.tracks?.length ? `
-  <Style id="track"><LineStyle><color>${kmlColor(TRACK_COLOUR)}</color><width>3</width></LineStyle></Style>` : ''}${plan ? `
+  <Style id="track"><LineStyle><color>${kmlColor(TRACK_COLOUR)}</color><width>3</width></LineStyle></Style>` : ''}${set.waters?.length ? `
+  <Style id="water"><LineStyle><color>${kmlColor(WATER_COLOUR)}</color><width>2</width></LineStyle><PolyStyle><color>${kmlColor(WATER_COLOUR, 0.4)}</color></PolyStyle></Style>` : ''}${plan ? `
   <Style id="piece"><LineStyle><color>ff24548f</color><width>1.5</width></LineStyle><PolyStyle><fill>0</fill></PolyStyle></Style>` : ''}
   <Placemark id="reach-print">
     <name>${escapeXml(`${set.sideKm} km print area`)}</name>
@@ -1029,7 +1036,7 @@ ${data(derived)}
     </ExtendedData>
     <Polygon><tessellate>1</tessellate><outerBoundaryIs><LinearRing><coordinates>${coordText(ring)}</coordinates></LinearRing></outerBoundaryIs></Polygon>
   </Placemark>
-${piecePlacemarks}${trackPlacemarks}${binPlacemarks}  <Placemark><name>${escapeXml(centre.name)}</name><Point><coordinates>${centre.lon.toFixed(6)},${centre.lat.toFixed(6)},0</coordinates></Point></Placemark>
+${piecePlacemarks}${trackPlacemarks}${waterPlacemarks}${binPlacemarks}  <Placemark><name>${escapeXml(centre.name)}</name><Point><coordinates>${centre.lon.toFixed(6)},${centre.lat.toFixed(6)},0</coordinates></Point></Placemark>
 </Document>
 </kml>
 `;
@@ -1114,6 +1121,11 @@ export function parsePrintKml(text) {
       tracks: parseTrackKml(text).filter((t) => t.levelMm != null).map(({ name, lines, levelMm }) => {
         if (!Number.isFinite(levelMm) || Math.abs(levelMm) > 10) throw new Error(`the track "${name}"'s level is out of range`);
         return { name, lines, levelMm };
+      }),
+      // files from before water of your own have none
+      waters: parseWaterKml(text).filter((w) => w.levelMm != null).map(({ name, rings, levelMm }) => {
+        if (!Number.isFinite(levelMm) || Math.abs(levelMm) > 10) throw new Error(`the water "${name}"'s level is out of range`);
+        return { name, rings, levelMm };
       }),
     },
   };
@@ -2969,6 +2981,17 @@ export function roadLines(osm, bounds, widthMm, { frame = null, pieces = null } 
   return out;
 }
 
+/** A bridge's deck, from its top down to its open underside (mm on the model). */
+export const BRIDGE_DECK_MM = 0.6;
+/**
+ * The longest open span between piers (mm on the model). Not measured: a
+ * guess at what a printer bridges cleanly without support. A longer crossing
+ * stands on piers spaced evenly, no further apart than this.
+ */
+export const BRIDGE_SPAN_MM = 20;
+/** A pier's length along the road (mm on the model), filled down to the riverbed. */
+export const PIER_MM = 1;
+
 /**
  * Each road as its own closed solid, as STL triangles (three points each) to
  * add to the terrain's: a ribbon its class's width, whose top is the ground
@@ -2978,8 +3001,16 @@ export function roadLines(osm, bounds, widthMm, { frame = null, pieces = null } 
  * a road in a cutting still shows. Classes whose level isn't up are left to
  * carveRoads. zMm is the terrain in mm (row 0 north); mmPerMetre is model mm
  * per metre of ground across (both from printHeights).
+ *
+ * water, a Uint8Array with a 1 for each grid point of sunk water, makes the
+ * road a bridge where it crosses it: the ground along the road is averaged
+ * over the land only, the top runs straight from one bank's top to the
+ * other's, and the floor is BRIDGE_DECK_MM under the top, so the water shows
+ * under the deck rather than the road damming it. A crossing longer than
+ * BRIDGE_SPAN_MM stands on piers (PIER_MM long, down to the bed) at most that
+ * far apart. A crossing that runs off the print keeps its one bank's level.
  */
-export function roadTriangles(roads, zMm, n, { widthMm, mmPerMetre, levels = ROAD_LEVELS }) {
+export function roadTriangles(roads, zMm, n, { widthMm, mmPerMetre, levels = ROAD_LEVELS, water = null }) {
   const step = widthMm / (n - 1);
   // the lowest and highest corner of the grid cell under a point: the terrain over the cell lies between
   const cellSpan = (x, y) => {
@@ -2996,8 +3027,9 @@ export function roadTriangles(roads, zMm, n, { widthMm, mmPerMetre, levels = ROA
     const pts = roadPoints(way.line, step);
     const m = pts.length;
     if (m < 2) continue;
-    const smooth = roadGround(pts, zMm, n, widthMm);
-    const sections = [];
+    const wet = water ? pts.map(([x, y]) => water[nearestPoint(x, y, n, step)] === 1) : null;
+    const smooth = roadGround(pts, zMm, n, widthMm, wet);
+    const sides = [], tops = [], bottoms = [];
     for (let k = 0; k < m; k++) {
       // the point's left is square to the mean of the directions either side, pushed out at a bend so the sides stay parallel
       const d0 = dir(pts[Math.max(0, k - 1)], pts[k === 0 ? 1 : k]), d1 = dir(pts[k === m - 1 ? m - 2 : k], pts[Math.min(m - 1, k + 1)]);
@@ -3010,10 +3042,13 @@ export function roadTriangles(roads, zMm, n, { widthMm, mmPerMetre, levels = ROA
       const L = [x + ox, y + oy], R = [x - ox, y - oy];
       const spans = [cellSpan(x, y), cellSpan(...L), cellSpan(...R)];
       const bottom = Math.max(0, Math.min(...spans.map((s) => s[0])) - 0.2);
-      const top = Math.max(smooth[k] + liftMm, Math.max(...spans.map((s) => s[1])) + 0.2, bottom + 0.4);
-      // counter-clockwise looking back along the road: top left, top right, bottom right, bottom left
-      sections.push([[L[0], L[1], top], [R[0], R[1], top], [R[0], R[1], bottom], [L[0], L[1], bottom]]);
+      sides.push([L, R]);
+      bottoms.push(bottom);
+      tops.push(Math.max(smooth[k] + liftMm, Math.max(...spans.map((s) => s[1])) + 0.2, bottom + 0.4));
     }
+    if (wet) bridgeDecks(pts, wet, tops, bottoms);
+    // counter-clockwise looking back along the road: top left, top right, bottom right, bottom left
+    const sections = sides.map(([L, R], k) => [[L[0], L[1], tops[k]], [R[0], R[1], tops[k]], [R[0], R[1], bottoms[k]], [L[0], L[1], bottoms[k]]]);
     for (let k = 0; k + 1 < m; k++) {
       const a = sections[k], b = sections[k + 1];
       for (let r = 0; r < 4; r++) {
@@ -3049,20 +3084,69 @@ function roadPoints(line, step) {
   return pts;
 }
 
-/** The ground under each of a road's points, averaged over ROAD_SMOOTH_MM either way along it, as a sliding window. */
-function roadGround(pts, zMm, n, widthMm) {
-  const m = pts.length;
+/** The distance along a line at each of its points, from its start. */
+function alongLine(pts) {
   const along = [0];
-  for (let k = 1; k < m; k++) along.push(along[k - 1] + Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]));
+  for (let k = 1; k < pts.length; k++) along.push(along[k - 1] + Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]));
+  return along;
+}
+
+/** The index of the grid point nearest a point on the model (row 0 north). */
+const nearestPoint = (x, y, n, step) => Math.max(0, Math.min(n - 1, Math.round(n - 1 - y / step))) * n + Math.max(0, Math.min(n - 1, Math.round(x / step)));
+
+/**
+ * The ground under each of a road's points, averaged over ROAD_SMOOTH_MM
+ * either way along it, as a sliding window. Points marked in wet (over water)
+ * count only where the window holds no dry ground, so a bank isn't pulled
+ * down by the water beside it.
+ */
+function roadGround(pts, zMm, n, widthMm, wet = null) {
+  const m = pts.length;
+  const along = alongLine(pts);
   const ground = pts.map(([x, y]) => gridAt(zMm, n, widthMm, x, y));
   const out = [];
-  let lo = 0, hi = 0, sum = 0;
+  let lo = 0, hi = 0, sum = 0, count = 0, dry = 0, dryCount = 0;
   for (let k = 0; k < m; k++) {
-    while (hi < m && along[hi] <= along[k] + ROAD_SMOOTH_MM) sum += ground[hi++];
-    while (along[lo] < along[k] - ROAD_SMOOTH_MM) sum -= ground[lo++];
-    out.push(sum / (hi - lo));
+    for (; hi < m && along[hi] <= along[k] + ROAD_SMOOTH_MM; hi++) {
+      sum += ground[hi]; count++;
+      if (!wet?.[hi]) { dry += ground[hi]; dryCount++; }
+    }
+    for (; along[lo] < along[k] - ROAD_SMOOTH_MM; lo++) {
+      sum -= ground[lo]; count--;
+      if (!wet?.[lo]) { dry -= ground[lo]; dryCount--; }
+    }
+    out.push(dryCount ? dry / dryCount : sum / count);
   }
   return out;
+}
+
+/**
+ * Turns each run of a road's points over water (wet) into a bridge, in place:
+ * tops run straight between the tops of the dry points either side (or level
+ * with the one there is), never lower than the top the point had, and
+ * bottoms rise to BRIDGE_DECK_MM under them, except at piers, spaced evenly
+ * no more than BRIDGE_SPAN_MM apart, which keep the bottom they had.
+ */
+function bridgeDecks(pts, wet, tops, bottoms) {
+  const m = pts.length, along = alongLine(pts);
+  for (let a = 0; a < m; a++) {
+    if (!wet[a]) continue;
+    let b = a;
+    while (b + 1 < m && wet[b + 1]) b++;
+    const before = a > 0 ? a - 1 : null, after = b + 1 < m ? b + 1 : null;
+    const deckAt = (k) => before != null && after != null
+      ? tops[before] + ((tops[after] - tops[before]) * (along[k] - along[before])) / (along[after] - along[before])
+      : before != null ? tops[before] : after != null ? tops[after] : Math.max(...tops.slice(a, b + 1));
+    const from = along[before ?? a], spanMm = along[after ?? b] - from;
+    const spans = Math.ceil(spanMm / BRIDGE_SPAN_MM - 1e-9);
+    const piers = [];
+    for (let s = 1; s < spans; s++) piers.push(from + (spanMm * s) / spans);
+    for (let k = a; k <= b; k++) {
+      tops[k] = Math.max(tops[k], deckAt(k));
+      if (!piers.some((p) => Math.abs(along[k] - p) <= PIER_MM / 2)) bottoms[k] = Math.max(bottoms[k], tops[k] - BRIDGE_DECK_MM);
+    }
+    a = b;
+  }
 }
 
 /**
@@ -3200,6 +3284,75 @@ export function trackLines(tracks, { frame, widthMm, pieces = null }) {
         }
       }
     }
+  });
+  return out;
+}
+
+// ---------- water of your own ----------
+
+/** An area of water's level when it is first imported (mm up: sunk as lakes are), and its colour on the map. */
+export const KML_WATER_LEVEL_MM = -0.6;
+export const WATER_COLOUR = '#3b7fc4';
+
+/**
+ * The areas of water in a KML file, one for each placemark with polygons in
+ * it, as { name, rings, levelMm }: rings every LinearRing of its polygons,
+ * outer and inner together as [lon, lat] points without the repeated last
+ * one, to be filled even-odd as OpenStreetMap's water is, and levelMm the
+ * level a print's KML saved with it (Data kmlWaterMm), or undefined. The
+ * outline and pieces of a print's own KML are left out, as are rings of
+ * fewer than three good points. Names fall back as parseTrackKml's do.
+ */
+export function parseWaterKml(text, fallback = 'Water') {
+  const waters = [];
+  let unnamed = 0;
+  for (const [, body] of text.matchAll(/<Placemark\b[^>]*>([\s\S]*?)<\/Placemark>/g)) {
+    if (/<styleUrl>#(square|piece)<\/styleUrl>/.test(body)) continue;
+    const rings = [];
+    for (const [, poly] of body.matchAll(/<Polygon\b[^>]*>([\s\S]*?)<\/Polygon>/g)) {
+      for (const [, coords] of poly.matchAll(/<coordinates>([\s\S]*?)<\/coordinates>/g)) {
+        const ring = coords.trim().split(/\s+/).map((t) => t.split(',').map(Number))
+          .filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180)
+          .map(([lon, lat]) => [lon, lat]);
+        if (ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]) ring.pop();
+        if (ring.length > 2) rings.push(ring);
+      }
+    }
+    if (!rings.length) continue;
+    const name = body.match(/<name>([\s\S]*?)<\/name>/)?.[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/, '$1').trim();
+    const level = body.match(/<Data\s+name="kmlWaterMm"[^>]*>[\s\S]*?<value>([\s\S]*?)<\/value>/)?.[1];
+    waters.push({ name: name ? unescapeXml(name) : null, rings, levelMm: level == null ? undefined : Number(level) });
+    if (!name) unnamed++;
+  }
+  let k = 0;
+  for (const w of waters) if (!w.name) w.name = unnamed > 1 ? `${fallback} ${++k}` : fallback;
+  return waters;
+}
+
+/**
+ * An area of water's size on the ground (km²), on a flat projection about its
+ * first point. Its rings fill even-odd, so a ring inside an odd number of the
+ * others is a hole, whichever way round it runs.
+ */
+export function waterKm2({ rings }) {
+  const [lon0, lat0] = rings[0][0];
+  const { lon: kx, lat: ky } = kmPerDegree(lat0);
+  const flat = rings.map((ring) => ring.map(([lon, lat]) => [(lon - lon0) * kx, (lat - lat0) * ky]));
+  return Math.max(0, flat.reduce((s, ring, k) => {
+    const depth = flat.filter((other, o) => o !== k && inRing(ring[0], other)).length;
+    return s + (depth % 2 ? -1 : 1) * Math.abs(ringArea2(ring)) / 2;
+  }, 0));
+}
+
+/**
+ * Each area of water printed (those with a level) on an n x n grid, as
+ * waterPoints finds OpenStreetMap's, as { water, levelMm, points }: water the
+ * index into waters and points a Uint8Array with a 1 for each grid point in it.
+ */
+export function kmlWaterPoints(waters, heights, n, widthMm, frame) {
+  const out = [];
+  waters.forEach(({ rings, levelMm }, water) => {
+    if (levelMm) out.push({ water, levelMm, points: waterPoints({ elements: [{ rings }] }, heights, n, widthMm, frame) });
   });
   return out;
 }

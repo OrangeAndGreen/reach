@@ -40,14 +40,14 @@ function saveSettings() {
   } catch { /* storage blocked: settings just aren't remembered */ }
 }
 
-// Imported tracks are kept apart, as they can run to thousands of points.
+// Imported tracks, and areas of water (with rings in place of lines), are kept apart, as they can run to thousands of points.
 const TRACKS = 'reach.tracks';
 function loadTracks() {
   try { return JSON.parse(localStorage.getItem(TRACKS)) || []; } catch { return []; }
 }
 function saveTracks() {
   try {
-    localStorage.setItem(TRACKS, JSON.stringify(state.tracks.map(({ name, lines, levelMm }) => ({ name, lines, levelMm }))));
+    localStorage.setItem(TRACKS, JSON.stringify(state.tracks.map(({ name, lines, rings, levelMm }) => ({ name, lines, rings, levelMm }))));
   } catch { /* storage blocked or full: the tracks just aren't remembered */ }
 }
 
@@ -793,7 +793,8 @@ function printSettings() {
     buildingDefaultM: Number($('print-default').value),
     roadMm: roadSetting(),
     waterMm: $('print-water').value === 'osm' && Number($('print-side').value) <= core.WATER_MAX_KM ? levelsOf('water', core.WATER_KINDS) : core.NO_WATER,
-    tracks: state.tracks.filter((t) => t.levelMm).map(({ name, lines, levelMm }) => ({ name, lines, levelMm })),
+    tracks: state.tracks.filter((t) => t.lines && t.levelMm).map(({ name, lines, levelMm }) => ({ name, lines, levelMm })),
+    waters: state.tracks.filter((t) => t.rings && t.levelMm).map(({ name, rings, levelMm }) => ({ name, rings, levelMm })),
     bins: state.bins.map((b) => ({ ...b })),
     binClearMm: binClearance(),
     cols,
@@ -899,8 +900,13 @@ function drawPrintSquare(fit) {
     for (let r = 1; r < set.rows; r++) lines.push([at(0, plan.bottomMm + r * w), at(plan.acrossMm, plan.bottomMm + r * w)]);
     L.polyline(lines, { color: cssVar('--accent'), weight: 1.5, dashArray: '5 5', interactive: false }).addTo(printLayer);
   }
-  // Every imported track, printed or left out, so it's plain where each runs against the print.
+  // Every imported track and area of water, printed or left out, so it's plain where each lies against the print.
   for (const t of state.tracks) {
+    if (t.rings) {
+      const rings = t.rings.map((ring) => ring.map(([lon, lat]) => [lat, lon]));
+      L.polygon(rings, { color: core.WATER_COLOUR, weight: 2, fillOpacity: t.levelMm ? 0.3 : 0.08, dashArray: t.levelMm ? null : '4 5', interactive: false }).addTo(printLayer);
+      continue;
+    }
     const lines = t.lines.map((line) => line.map(([lon, lat]) => [lat, lon]));
     L.polyline(lines, { color: '#ffffff', weight: 5, opacity: 0.8, interactive: false }).addTo(printLayer);
     L.polyline(lines, { color: core.TRACK_COLOUR, weight: 2.5, dashArray: t.levelMm ? null : '4 5', interactive: false }).addTo(printLayer);
@@ -1368,11 +1374,14 @@ async function buildModel() {
       if (shore) scaled.mm = core.markShore(scaled.mm, shore, set.shoreMm, set.shoreRidge);
       // Water and sunk roads are cut before the buildings and raised roads are stood on the ground, so they reach down into it rather than float.
       let water = null;
-      if (waterReply) {
-        const level = set.waterMm;
-        const { lakes, wide } = core.waterKinds(waterReply.osm, heights, n, set.widthMm, piece.frame);
-        const areas = lakes.map((v, k) => v | wide[k]);
-        let rivers = { mm: scaled.mm, mask: new Uint8Array(n * n), km: 0 };
+      const own = core.kmlWaterPoints(set.waters, heights, n, set.widthMm, piece.frame);
+      if (waterReply || own.length) {
+        const level = waterReply ? set.waterMm : core.NO_WATER;
+        const none = new Uint8Array(n * n);
+        const { lakes, wide } = waterReply ? core.waterKinds(waterReply.osm, heights, n, set.widthMm, piece.frame) : { lakes: none, wide: none };
+        const areas = lakes.map((v, k) => v | wide[k] | (own.some((w) => w.points[k]) ? 1 : 0));
+        const before = scaled.mm;
+        let rivers = { mm: scaled.mm, mask: none, km: 0 };
         if (level.narrow) {
           rivers = core.carveRivers(scaled.mm, core.riverLines(waterReply.osm, piece.frame), n,
             { widthMm: set.widthMm, mmPerMetre: scaled.mmPerMetre, depthMm: -level.narrow, skip: areas, heights });
@@ -1380,12 +1389,17 @@ async function buildModel() {
         let mm = rivers.mm;
         if (level.lakes) mm = core.carveWater(mm, lakes, n, -level.lakes);
         if (level.wide) mm = core.carveWater(mm, wide, n, -level.wide);
+        for (const w of own) mm = core.carveWater(mm, w.points, n, -w.levelMm);
         scaled.mm = mm;
         // blue in the preview: the water printed
-        const mask = areas.map((_, k) => (level.lakes && lakes[k]) || (level.wide && wide[k]) || rivers.mask[k] ? 1 : 0);
+        const mask = areas.map((_, k) => (level.lakes && lakes[k]) || (level.wide && wide[k]) || rivers.mask[k] || own.some((w) => w.points[k]) ? 1 : 0);
+        // what the water sank, which a raised road or track crosses as a bridge
+        const sunk = mask.map((v, k) => (v && mm[k] < before[k] - 1e-9 ? 1 : 0));
         const cellKm = set.widthMm / (n - 1) / scaled.mmPerMetre / 1000;
         const km2 = (points) => points.reduce((s, v) => s + v, 0) * cellKm * cellKm;
-        water = { mask, areas, lakesKm2: level.lakes ? km2(lakes) : 0, wideKm2: level.wide ? km2(wide) : 0, riverKm: rivers.km, readAt: waterReply.readAt };
+        const ownKm2 = set.waters.map(() => 0);
+        for (const w of own) ownKm2[w.water] = km2(w.points);
+        water = { mask, areas, sunk, lakesKm2: level.lakes ? km2(lakes) : 0, wideKm2: level.wide ? km2(wide) : 0, riverKm: rivers.km, ownKm2, readAt: waterReply?.readAt };
       }
       let ways = null, roadMask = null;
       if (roadReply) {
@@ -1416,7 +1430,7 @@ async function buildModel() {
       }
       let roads = null;
       if (ways) {
-        const roadTris = core.roadTriangles(ways, scaled.mm, n, { ...pieceSet, ...scaled, levels: set.roadMm });
+        const roadTris = core.roadTriangles(ways, scaled.mm, n, { ...pieceSet, ...scaled, levels: set.roadMm, water: water?.sunk });
         for (const p of roadTris) extra.push(p);
         const km = {};
         for (const { cls, line } of ways) km[cls] = (km[cls] || 0) + core.lineLength(line) / scaled.mmPerMetre / 1000;
@@ -1425,7 +1439,7 @@ async function buildModel() {
       // written last, after the roads, so the preview finds them at the end
       let tracks = null;
       if (trackWays) {
-        const trackTris = core.roadTriangles(trackWays, scaled.mm, n, { ...pieceSet, ...scaled });
+        const trackTris = core.roadTriangles(trackWays, scaled.mm, n, { ...pieceSet, ...scaled, water: water?.sunk });
         for (const p of trackTris) extra.push(p);
         const km = set.tracks.map(() => 0);
         for (const { track, line } of trackWays) km[track] += core.lineLength(line) / scaled.mmPerMetre / 1000;
@@ -1519,12 +1533,13 @@ function sumRoads(pieces) {
   return { count: all.reduce((s, r) => s + r.count, 0), km, triangles: all.reduce((s, r) => s + r.triangles, 0), readAt: all[0].readAt };
 }
 
-/** The lakes and rivers of every piece together, or null without them. */
+/** The lakes and rivers of every piece together, and each area of water of your own, or null without any. */
 function sumWater(pieces) {
   const all = pieces.map((p) => p.water).filter(Boolean);
   if (!all.length) return null;
   const sum = (k) => all.reduce((s, w) => s + w[k], 0);
-  return { lakesKm2: sum('lakesKm2'), wideKm2: sum('wideKm2'), riverKm: sum('riverKm'), readAt: all[0].readAt };
+  const ownKm2 = all[0].ownKm2.map((_, k) => all.reduce((s, w) => s + w.ownKm2[k], 0));
+  return { lakesKm2: sum('lakesKm2'), wideKm2: sum('wideKm2'), riverKm: sum('riverKm'), ownKm2, readAt: all[0].readAt };
 }
 
 /** The length of each track printed, over every piece together (km), or null without tracks. */
@@ -1753,7 +1768,7 @@ function showWaterControls() {
 $('print-water').addEventListener('change', () => { showWaterControls(); buildModel(); });
 showWaterControls();
 
-// Tracks of your own, from KML files: each in the list with its level and a button to take it out.
+// Tracks and areas of water of your own, from KML files: each in the list with its level and a button to take it out.
 let nextTrack = state.tracks.length;
 function renderTracks() {
   const ul = $('print-tracks');
@@ -1761,8 +1776,8 @@ function renderTracks() {
   ul.hidden = !state.tracks.length;
   for (const t of state.tracks) {
     const li = document.createElement('li');
-    li.innerHTML = `<span class="swatch" style="background:${core.TRACK_COLOUR}"></span>
-      <span class="name" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</span><span class="coords">${trackLength(core.trackKm(t))}</span>
+    li.innerHTML = `<span class="swatch" style="background:${t.rings ? core.WATER_COLOUR : core.TRACK_COLOUR}"></span>
+      <span class="name" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</span><span class="coords">${t.rings ? waterArea(core.waterKm2(t)) : trackLength(core.trackKm(t))}</span>
       <input class="level" type="number" step="0.1" min="-${core.LEVEL_MAX_MM}" max="${core.LEVEL_MAX_MM}" aria-label="Level of ${escapeHtml(t.name)}, mm" title="mm: positive raises, negative sinks, 0 leaves it out">
       <button type="button" aria-label="Remove ${escapeHtml(t.name)}" title="Remove from the model">×</button>`;
     const level = li.querySelector('input');
@@ -1775,11 +1790,17 @@ function renderTracks() {
     ul.append(li);
   }
   const printed = state.tracks.filter((t) => t.levelMm);
+  const water = state.tracks.some((t) => t.rings), lines = state.tracks.some((t) => t.lines);
   $('print-tracks-hint').textContent = !state.tracks.length
-    ? 'Lines from a KML file (a hike, a ride, a route drawn in Google Earth) printed on the ground, each raised or sunk by its own amount.'
-    : !printed.length ? 'Every track is at 0, so the print has none. Left out, a track is dashed on the map.'
-    : `Each track's level is in mm: positive raises, negative sinks, 0 leaves it out. Each track is ${core.TRACK_WIDTH_MM} mm wide, at its level over or under the ground along it, smoothed so it reads as graded. `
-      + 'A raised track is its own solid standing on the ground; a sunk one is a groove, which leaves the water it crosses alone. The heights in the file are not used.';
+    ? "From a KML file: lines (a hike, a ride, a route drawn in Google Earth) printed on the ground, and polygons as water, to fill gaps in OpenStreetMap's, each raised or sunk by its own amount."
+    : !printed.length ? 'Everything here is at 0, so the print has none of it. Left out, a track is dashed on the map, and water outlined faintly.'
+    : ["Each one's level is in mm: positive raises, negative sinks, 0 leaves it out.",
+      lines && `Each track is ${core.TRACK_WIDTH_MM} mm wide, at its level over or under the ground along it, smoothed so it reads as graded. A raised track is its own solid standing on the ground; a sunk one is a groove, which leaves the water it crosses alone.`,
+      water && "An area of water sinks flat as a lake does (or, raised, lifts flat), with OpenStreetMap's lakes and rivers or without them.",
+      'Raised roads and tracks cross sunk water as bridges, open underneath. The heights in the file are not used.'].filter(Boolean).join(' ');
+}
+function waterArea(km2) {
+  return state.units === 'imperial' ? `${(km2 / 2.589988).toFixed(2)} sq mi` : `${km2.toFixed(2)} km²`;
 }
 function trackLength(km) {
   return state.units === 'imperial' ? `${(km / 1.609344).toFixed(1)} mi` : `${km.toFixed(1)} km`;
@@ -1798,15 +1819,19 @@ $('print-track-file').addEventListener('change', async () => {
   for (const file of files) {
     let found = [];
     try {
-      found = core.parseTrackKml(await file.text(), file.name.replace(/\.kml$/i, ''));
-    } catch { /* unreadable: counts as no lines */ }
+      const text = await file.text(), fallback = file.name.replace(/\.kml$/i, '');
+      found = [...core.parseTrackKml(text, fallback).map(({ name, lines }) => ({ name, lines, levelMm: core.TRACK_LEVEL_MM })),
+        ...core.parseWaterKml(text, `${fallback} water`).map(({ name, rings }) => ({ name, rings, levelMm: core.KML_WATER_LEVEL_MM }))];
+    } catch { /* unreadable: counts as nothing in it */ }
     if (!found.length) empty.push(file.name);
-    for (const { name, lines } of found) added.push({ id: nextTrack++, name, lines, levelMm: core.TRACK_LEVEL_MM });
+    for (const t of found) added.push({ id: nextTrack++, ...t });
   }
   state.tracks.push(...added);
-  const none = empty.length ? ` No lines in ${empty.join(', ')}.` : '';
-  if (!added.length) { status('print', `No tracks imported.${none}`, true); return; }
-  status('print', `Imported ${added.length === 1 ? added[0].name : `${added.length} tracks`}.${none}`, Boolean(empty.length));
+  const none = empty.length ? ` No lines or polygons in ${empty.join(', ')}.` : '';
+  if (!added.length) { status('print', `Nothing imported.${none}`, true); return; }
+  const count = (k, one, many) => (k === 1 ? `1 ${one}` : `${k} ${many}`);
+  const lineCount = added.filter((t) => t.lines).length, waterCount = added.length - lineCount;
+  status('print', `Imported ${added.length === 1 ? added[0].name : [lineCount && count(lineCount, 'track', 'tracks'), waterCount && count(waterCount, 'area of water', 'areas of water')].filter(Boolean).join(' and ')}.${none}`, Boolean(empty.length));
   tracksChanged();
 });
 renderTracks();
@@ -2222,7 +2247,7 @@ function renderPrintTable() {
     ...(first.balance ? [['Balance notch', `${split ? `On ${first.name}: ` : ''}${balanceText(first.balance, set, first.outline)}`]] : []),
     ...(m.buildings ? [['Buildings', buildingsText(m)]] : []),
     ...(m.roads ? [['Roads', roadsText(m)]] : []),
-    ...(m.water ? [['Lakes and rivers', waterText(m)]] : []),
+    ...(m.water ? [[m.water.readAt ? 'Lakes and rivers' : 'Water', waterText(m)]] : []),
     ...(m.tracks ? [['Tracks', tracksText(m)]] : []),
     ...(m.bins ? [['Bins', binsText(m)]] : []),
     ['STL', `${split ? `${pieces.length} files in one ZIP, ` : ''}${stlMb.toFixed(1)} MB, ${triangles.toLocaleString('en-US')} triangles`],
@@ -2302,13 +2327,18 @@ function roadsText({ roads: r, set }) {
 }
 
 function waterText(m) {
-  const { lakesKm2, wideKm2, riverKm } = m.water, level = m.set.waterMm;
+  const { lakesKm2, wideKm2, riverKm, ownKm2 } = m.water, level = m.set.waterMm;
   const area = (km2) => (state.units === 'imperial' ? `${(km2 / 2.589988).toFixed(2)} sq mi` : `${km2.toFixed(2)} km²`);
   const length = state.units === 'imperial' ? `${(riverKm / 1.609344).toFixed(1)} mi` : `${riverKm.toFixed(1)} km`;
   const parts = [lakesKm2 >= 1e-9 && `${area(lakesKm2)} of lake ${levelText(level.lakes).toLowerCase()}`,
     wideKm2 >= 1e-9 && `${area(wideKm2)} of wide river ${levelText(level.wide).toLowerCase()}`,
     riverKm >= 0.05 && `${length} of narrow river ${levelText(level.narrow).toLowerCase()}`].filter(Boolean);
-  return parts.length ? parts.join('; ') : 'None of the kinds printed in OpenStreetMap here, or none big enough to show';
+  const osm = !m.water.readAt ? [] : parts.length ? [parts.join('; ')] : ['None of the kinds printed in OpenStreetMap here, or none big enough to show'];
+  const own = m.set.waters.map((w, k) => `${escapeHtml(w.name)}: ${ownKm2[k] < 1e-9 ? 'not on the print, or too small to show'
+    : `${area(ownKm2[k])} ${levelText(w.levelMm).toLowerCase()}`}`);
+  const raised = (m.roads && Object.values(m.set.roadMm).some((v) => v > 0)) || m.set.tracks.some((t) => t.levelMm > 0);
+  const bridges = raised && m.set.waters.concat(Object.values(level)).some((w) => (w.levelMm ?? w) < 0) ? [`raised roads and tracks cross sunk water on a deck ${core.BRIDGE_DECK_MM} mm thick, open underneath, on piers at most ${core.BRIDGE_SPAN_MM} mm apart`] : [];
+  return [...osm, ...own, ...bridges].join('; ');
 }
 
 function binsText({ bins, binRaiseMm }) {
@@ -2353,7 +2383,7 @@ $('print-kml').addEventListener('click', () => {
     centre: m.centre,
     set: m.set,
     // a set's label differs piece to piece, so only a print in one piece keeps it
-    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.lowM, highM: m.highM, reliefMm: m.reliefMm, binRaiseMm: m.binRaiseMm, triangles, buildings: m.buildings, roads: m.roads, water: m.water && { lakesKm2: m.water.lakesKm2, wideKm2: m.water.wideKm2, riverKm: m.water.riverKm, readAt: m.water.readAt }, label: m.pieces.length === 1 ? m.pieces[0].label : null, balance: m.pieces.length === 1 ? m.pieces[0].balance : null },
+    model: { zoom: m.zoom, pixelM: m.pixel, seaZoom: m.seaZoom, seaPixelM: m.seaPixel, lowM: m.lowM, highM: m.highM, reliefMm: m.reliefMm, binRaiseMm: m.binRaiseMm, triangles, buildings: m.buildings, roads: m.roads, water: m.water?.readAt && { lakesKm2: m.water.lakesKm2, wideKm2: m.water.wideKm2, riverKm: m.water.riverKm, readAt: m.water.readAt }, label: m.pieces.length === 1 ? m.pieces[0].label : null, balance: m.pieces.length === 1 ? m.pieces[0].balance : null },
     stlFile: stlFileName(m),
   });
   download(printFileName(m, 'kml'), kml, 'application/vnd.google-earth.kml+xml');
@@ -2498,8 +2528,8 @@ $('print-file').addEventListener('change', async () => {
   $('print-water').value = core.anyLevel(set.waterMm) ? 'osm' : 'none';
   if (core.anyLevel(set.waterMm)) for (const [kind, mm] of Object.entries(set.waterMm)) setLevel($(`print-water-${kind}`), mm);
   showWaterControls();
-  // the file's tracks take the place of the ones imported here, so the model is the file's
-  state.tracks = set.tracks.map((t) => ({ ...t, id: nextTrack++ }));
+  // the file's tracks and water take the place of the ones imported here, so the model is the file's
+  state.tracks = [...set.tracks, ...set.waters].map((t) => ({ ...t, id: nextTrack++ }));
   saveTracks();
   renderTracks();
   // and its bins those made here

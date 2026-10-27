@@ -98,7 +98,7 @@ test('carveWater sinks a lake to one level under its lowest water, and leaves th
 
 test('a print KML keeps the water setting and the area sunk', () => {
   const centre = { name: 'Lake Placid', lat: 44.28, lon: -73.98 };
-  const set = { sideKm: 20, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 2, baseMm: 3, seaFloorM: 0, depthStretch: 2, shoreMm: 0, shoreRidge: false, label: false, labelText: '', balance: false, infillPercent: 15, cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: { lakes: -0.6, wide: 1.2, narrow: -2 }, cols: 1, rows: 1, tracks: [], bins: [], binClearMm: 0.4 };
+  const set = { sideKm: 20, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 2, baseMm: 3, seaFloorM: 0, depthStretch: 2, shoreMm: 0, shoreRidge: false, label: false, labelText: '', balance: false, infillPercent: 15, cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: { lakes: -0.6, wide: 1.2, narrow: -2 }, cols: 1, rows: 1, tracks: [], waters: [], bins: [], binClearMm: 0.4 };
   const model = { zoom: 12, pixelM: 28, lowM: 500, highM: 1600, reliefMm: 11, triangles: 90000, water: { lakesKm2: 12.345, wideKm2: 1, riverKm: 3, readAt: '2026-10-22' } };
   const kml = core.printKml({ centre, set, model });
   assert.match(kml, /<Data name="lakesKm2">.*<value>12.35<\/value>/);
