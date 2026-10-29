@@ -167,6 +167,7 @@ button.primary:disabled { opacity: 0.55; cursor: progress; }
 .field button.add {
   align-self: flex-start; background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 12px; cursor: pointer;
 }
+.field .buttons { display: flex; flex-wrap: wrap; gap: 8px; }
 .origin { color: var(--ink); font-weight: 600; }
 
 .status { min-height: 1.5em; font-size: 13px; color: var(--ink-2); }
