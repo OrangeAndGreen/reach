@@ -361,11 +361,15 @@
         <div class="row">
           <div class="field">
             <label for="print-track-add">Tracks and water</label>
-            <button id="print-track-add" class="add" type="button">Import KML</button>
+            <div class="buttons">
+              <button id="print-track-add" class="add" type="button">Import KML</button>
+              <button id="print-track-fit" class="add" type="button" hidden title="Centre the print on the tracks and water, at the smallest size that holds them">Fit to tracks</button>
+            </div>
             <input id="print-track-file" type="file" accept=".kml,application/vnd.google-earth.kml+xml" multiple hidden>
           </div>
         </div>
         <ul id="print-tracks" class="places tracks" hidden></ul>
+        <p id="print-fit-hint" class="hint" hidden></p>
         <p id="print-tracks-hint" class="hint"></p>
         <div class="row">
           <div class="field">

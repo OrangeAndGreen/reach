@@ -865,6 +865,7 @@ function shoreSetting(mm) {
 
 function setPrintCentre(place, fit = true) {
   state.print = place;
+  $('print-fit-hint').hidden = true;
   saveSettings();
   drawPrintSquare(fit);
   buildModel();
@@ -1104,10 +1105,10 @@ function endBinDrag() {
 }
 
 /** Centres the print on a point moved to on the map, named once the lookup answers. */
-function movePrint(centre) {
+function movePrint(centre, fit = false) {
   const lat = centre.lat, lon = ((centre.lon + 540) % 360) - 180;
   const place = { name: `${lat.toFixed(3)}, ${lon.toFixed(3)}`, lat, lon };
-  setPrintCentre(place, false);
+  setPrintCentre(place, fit);
   // The name follows when the lookup answers, unless the print has moved on by then.
   placeName(lat, lon).then((name) => {
     if (state.print !== place) return;
@@ -1579,6 +1580,7 @@ $('print-run').addEventListener('click', buildModel);
 let lastSide = $('print-side').value;
 function sideChanged() {
   lastSide = $('print-side').value;
+  $('print-fit-hint').hidden = true;
   drawPrintSquare(true);
   showBuildingControls();
   showRoadControls();
@@ -1772,6 +1774,7 @@ showWaterControls();
 let nextTrack = state.tracks.length;
 function renderTracks() {
   const ul = $('print-tracks');
+  $('print-track-fit').hidden = !state.tracks.length;
   ul.innerHTML = '';
   ul.hidden = !state.tracks.length;
   for (const t of state.tracks) {
@@ -1806,12 +1809,35 @@ function trackLength(km) {
   return state.units === 'imperial' ? `${(km / 1.609344).toFixed(1)} mi` : `${km.toFixed(1)} km`;
 }
 function tracksChanged() {
+  $('print-fit-hint').hidden = true;
   saveTracks();
   renderTracks();
   drawPrintSquare(false);
   buildModel();
 }
 $('print-track-add').addEventListener('click', () => $('print-track-file').click());
+// Centres the print on every track and area of water, printed or left out, at the smallest size across that holds
+// them all in its shape as it is turned, with a little room round them; the size joins the list as a dragged one does.
+$('print-track-fit').addEventListener('click', () => {
+  const set = wholeShape(printSettings());
+  const fit = core.fitPrint(core.trackPoints(state.tracks), {
+    shape: set.shape, widthMm: set.widthMm, aspect: set.aspect, cornerMm: set.shape === 'square' ? 0 : set.cornerMm, bearing: set.bearing,
+  });
+  if (!fit) return;
+  addSide(fit.sideKm, null, true);
+  lastSide = $('print-side').value;
+  $('print-side-field').hidden = true;
+  $('print-side-hint').hidden = true;
+  showBuildingControls();
+  showRoadControls();
+  showWaterControls();
+  movePrint(fit.centre, true);
+  const hint = $('print-fit-hint');
+  hint.textContent = fit.clamped
+    ? `The tracks need ${core.formatSide(fit.needKm, state.units)} across, more than the largest print, so it is ${core.formatSide(fit.sideKm, state.units)} and some of them lie outside it.`
+    : `Fitted to the tracks: ${core.formatSide(fit.sideKm, state.units)} across, with a little room round them.`;
+  hint.hidden = false;
+});
 $('print-track-file').addEventListener('change', async () => {
   const files = [...$('print-track-file').files];
   $('print-track-file').value = '';

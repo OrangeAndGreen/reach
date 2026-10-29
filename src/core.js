@@ -594,6 +594,111 @@ export function snapSideKm(km) {
   return Math.min(SIDE_MAX_KM, Math.max(SIDE_MIN_KM, Number((Math.round(km / step) * step).toPrecision(6))));
 }
 
+/** How much room a print fitted to tracks leaves round them: this much of its size across, on each side. */
+export const FIT_MARGIN = 0.05;
+
+/**
+ * A side rounded up, never down, to the step snapSideKm rounds to (10 m under
+ * 1 km, 100 m under 10 km, 1 km above), so what it was rounded from still fits.
+ */
+export function ceilSideKm(km) {
+  const step = km < 1 ? 0.01 : km < 10 ? 0.1 : 1;
+  // a hair under a step stays on it, so float noise doesn't add a whole step
+  return Number((Math.ceil(km / step - 1e-9) * step).toPrecision(6));
+}
+
+/** Every [lon, lat] of a list of tracks and areas of water ({ lines } or { rings }). */
+export function trackPoints(tracks) {
+  return tracks.flatMap((t) => (t.lines || t.rings || []).flat());
+}
+
+/**
+ * The middle of a set of longitudes, along the shortest way round: the span
+ * left when the widest gap between them is taken out, so points either side
+ * of the antimeridian meet across it rather than across the whole world.
+ * Returns { mid, span } in degrees, mid within -180 to 180.
+ */
+function lonSpan(lons) {
+  const sorted = lons.map((l) => ((l % 360) + 540) % 360 - 180).sort((a, b) => a - b);
+  let gap = sorted[0] + 360 - sorted[sorted.length - 1], west = sorted[0];
+  for (let k = 1; k < sorted.length; k++) {
+    if (sorted[k] - sorted[k - 1] > gap) { gap = sorted[k] - sorted[k - 1]; west = sorted[k]; }
+  }
+  const span = 360 - gap;
+  return { mid: ((west + span / 2 + 540) % 360) - 180, span };
+}
+
+/**
+ * How far from the middle of a shape's outline (ring, star-shaped about
+ * [mid, mid]) its edge lies, looking along the direction [dx, dy].
+ */
+function reachAlong(ring, mid, dx, dy) {
+  let best = Infinity;
+  for (let k = 0; k < ring.length; k++) {
+    const [ax, ay] = ring[k], [bx, by] = ring[(k + 1) % ring.length];
+    const ex = bx - ax, ey = by - ay, ox = ax - mid, oy = ay - mid;
+    const den = dx * ey - dy * ex;
+    if (Math.abs(den) < 1e-12) continue;
+    const t = (ox * ey - oy * ex) / den, u = (ox * dy - oy * dx) / den;
+    if (t > 1e-9 && u >= -1e-9 && u <= 1 + 1e-9) best = Math.min(best, t);
+  }
+  return best;
+}
+
+/**
+ * The print that holds a set of points ([lon, lat] each, from trackPoints):
+ * centred on the middle of their box as the print lies (turned to bearing,
+ * the long way round the antimeridian never taken), and the smallest size
+ * across that keeps every point inside the shape (as shapeOutline draws it,
+ * widthMm across, with its aspect and cornerMm) with FIT_MARGIN to spare,
+ * rounded up with ceilSideKm. Sizes are continuous, so the size isn't one of
+ * the list's; it is held to SIDE_MIN_KM to SIDE_MAX_KM, and clamped says the
+ * points needed more than SIDE_MAX_KM, so some fall outside. Returns
+ * { centre: { lat, lon }, sideKm, needKm, clamped }, needKm the size before
+ * rounding and clamping, or null with no points.
+ */
+export function fitPrint(points, { shape = 'square', widthMm = 120, aspect = 2, cornerMm = 0, bearing = 0, margin = FIT_MARGIN } = {}) {
+  if (!points.length) return null;
+  const clampLat = (lat) => Math.max(-85, Math.min(85, lat));
+  const lats = points.map((p) => p[1]);
+  let centre = { lat: clampLat((Math.min(...lats) + Math.max(...lats)) / 2), lon: lonSpan(points.map((p) => p[0])).mid };
+  // Each point as km right and up on the print, its longitude taken the short way round from the centre.
+  const local = (at) => {
+    const frame = printFrame(at, widthMm, widthMm, bearing), mid = widthMm / 2;
+    return {
+      frame,
+      km: points.map(([lon, lat]) => {
+        const [x, y] = frame.toMm(at.lon + ((((lon - at.lon) % 360) + 540) % 360) - 180, lat);
+        return [x - mid, y - mid];
+      }),
+    };
+  };
+  // The box is even in degrees at its own centre, so moving the centre moves the box: settle it in a few steps.
+  let km;
+  for (let k = 0; k < 4; k++) {
+    const l = local(centre);
+    km = l.km;
+    const xs = km.map((p) => p[0]), ys = km.map((p) => p[1]);
+    const bx = (Math.min(...xs) + Math.max(...xs)) / 2, by = (Math.min(...ys) + Math.max(...ys)) / 2;
+    if (Math.hypot(bx, by) < 1e-6) break;
+    const p = l.frame.toLonLat(bx + widthMm / 2, by + widthMm / 2);
+    centre = { lat: clampLat(p.lat), lon: ((p.lon + 540) % 360) - 180 };
+    km = local(centre).km;
+  }
+  // The size each point needs: its distance from the centre over how far the outline reaches that way, at widthMm.
+  const { ring } = shapeOutline(shape, widthMm, { aspect, cornerMm });
+  const mid = widthMm / 2;
+  let need = 0;
+  for (const [x, y] of km) {
+    const d = Math.hypot(x, y);
+    if (d < 1e-9) continue;
+    need = Math.max(need, (widthMm * d) / reachAlong(ring, mid, x / d, y / d));
+  }
+  const needKm = need * (1 + 2 * margin);
+  const sideKm = Math.min(SIDE_MAX_KM, Math.max(SIDE_MIN_KM, ceilSideKm(needKm)));
+  return { centre, sideKm, needKm, clamped: needKm > SIDE_MAX_KM };
+}
+
 /** The squarest and longest a rectangle dragged on the map gets, long side over short. */
 export const ASPECT_MIN = 1;
 export const ASPECT_MAX = 5;
