@@ -3254,6 +3254,69 @@ function bridgeDecks(pts, wet, tops, bottoms) {
   }
 }
 
+// ---------- bridge test ----------
+
+/** The spans a bridge test prints side by side (mm on the model), shortest first. */
+export const BRIDGE_LADDER_SPANS_MM = [10, 15, 20, 25, 30];
+
+/**
+ * A small test print that sets BRIDGE_SPAN_MM by measuring it: a plate with
+ * one bridge for each of spansMm side by side, shortest at the front (y = 0
+ * side). Each bridge is built as a real one is: a deck deckMm thick
+ * (BRIDGE_DECK_MM) and widthMm wide (a motorway's, the widest road class),
+ * resting on a PIER_MM pier at each end, open spanMm between them, its
+ * underside clearMm over the plate (1.2 mm: a motorway's 1.2 mm level over
+ * banks at the top of water sunk 0.6 mm, less the 0.6 mm deck, is about what a
+ * real one clears). Raised dots on the plate left of each bridge count it:
+ * one dot for the shortest span, five for the longest. The longest span that
+ * prints clean is the BRIDGE_SPAN_MM to set.
+ *
+ * Returns { solids, rungs, sizeMm }: solids, each a closed solid as STL
+ * triangles (three points each) that overlap where they join, so a slicer
+ * merges them as it does a print's roads; rungs, each bridge's { spanMm, dots,
+ * x0, x1, y0, y1, underMm, topMm } (the open span from x0 to x1, the deck from
+ * y0 to y1 across and from underMm to topMm up); and sizeMm, the print's
+ * [x, y, z].
+ */
+export function bridgeLadder({ spansMm = BRIDGE_LADDER_SPANS_MM, deckMm = BRIDGE_DECK_MM, widthMm = ROAD_CLASSES.motorway.widthMm, clearMm = 1.2, plateMm = 1, pierMm = PIER_MM } = {}) {
+  const margin = 2, gapY = 4, dot = 0.8, dotGap = 0.6, dotMm = 0.6, sink = 0.2;
+  const spans = [...spansMm].sort((a, b) => a - b);
+  const dotsX = spans.length * dot + (spans.length - 1) * dotGap;
+  const x0 = margin + dotsX + margin;
+  const sizeX = x0 + 2 * pierMm + spans[spans.length - 1] + margin;
+  const sizeY = 2 * margin + spans.length * widthMm + (spans.length - 1) * gapY;
+  const underMm = plateMm + clearMm, topMm = underMm + deckMm;
+  const solids = [box(0, 0, 0, sizeX, sizeY, plateMm)];
+  const rungs = spans.map((spanMm, k) => {
+    const y0 = margin + k * (widthMm + gapY), y1 = y0 + widthMm;
+    const a = x0, b = x0 + pierMm, c = b + spanMm, d = c + pierMm, z0 = plateMm - sink;
+    // the side view, an upside-down U, counter-clockwise: two piers and the deck across them
+    solids.push(sideways([[a, z0], [b, z0], [b, underMm], [c, underMm], [c, z0], [d, z0], [d, topMm], [a, topMm]], y0, y1));
+    for (let s = 0; s <= k; s++) {
+      const dx = margin + s * (dot + dotGap), dy = y0 + (widthMm - dot) / 2;
+      solids.push(box(dx, dy, z0, dx + dot, dy + dot, plateMm + dotMm));
+    }
+    return { spanMm, dots: k + 1, x0: b, x1: c, y0, y1, underMm, topMm };
+  });
+  return { solids, rungs, sizeMm: [sizeX, sizeY, topMm] };
+}
+
+/** A box from x0, y0, z0 to x1, y1, z1 as a closed solid's triangles. */
+function box(x0, y0, z0, x1, y1, z1) {
+  return prism([[[x0, y0], [x1, y0], [x1, y1], [x0, y1]]], z0, z1);
+}
+
+/**
+ * An outline in the x-z plane (counter-clockwise, z up) run across from y0 to
+ * y1, as a closed solid's triangles: prism's, with its y and z swapped and
+ * each triangle turned round, since swapping two axes turns the solid inside out.
+ */
+function sideways(outline, y0, y1) {
+  const tris = prism([outline], y0, y1).map(([x, z, y]) => [x, y, z]);
+  for (let t = 0; t < tris.length; t += 3) [tris[t + 1], tris[t + 2]] = [tris[t + 2], tris[t + 1]];
+  return tris;
+}
+
 /**
  * Cuts the roads whose class's level in levels (a track: its own) is down into a millimetre grid
  * (row 0 north) as grooves: the grid points within half the road's width of
