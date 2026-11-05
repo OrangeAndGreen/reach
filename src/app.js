@@ -2405,6 +2405,10 @@ $('print-bridge-test').addEventListener('click', () => {
   download('reach-bridge-test.stl', core.writeStl(core.bridgeLadder().solids.flat()), 'model/stl');
 });
 
+$('print-road-test').addEventListener('click', () => {
+  download('reach-road-width-test.stl', core.writeStl(core.roadLadder().solids.flat()), 'model/stl');
+});
+
 $('print-kml').addEventListener('click', () => {
   const m = state.model;
   if (!m) return;

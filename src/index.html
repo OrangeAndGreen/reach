@@ -451,10 +451,12 @@
         <button id="print-map">Download map image</button>
         <button id="print-open">Open KML</button>
         <button id="print-bridge-test" title="A small print with bridges of 10, 15, 20, 25 and 30 mm, to find the longest span your printer bridges">Download bridge test</button>
+        <button id="print-road-test" title="A small print with a raised line for each road class at its width and height, to find the narrowest road your printer prints clean">Download road width test</button>
         <input id="print-file" type="file" accept=".kml,application/vnd.google-earth.kml+xml" hidden>
       </div>
       <p class="hint">The KML holds the outline for Google Earth and every setting above. Open it here later to build the same STL again.</p>
       <p class="hint">The bridge test prints the 10, 15, 20, 25 and 30 mm spans side by side, counted by one to five dots, each with the 0.6 mm deck and 1 mm piers the bridges on a print have. Print it without supports: the longest span that comes out clean is how far apart piers can stand.</p>
+      <p class="hint">The road width test prints one raised line for each road class (secondary, primary, trunk, motorway), as wide and as high as that class is raised by default, narrowest first and counted by one to four dots. The narrowest line that comes out clean is the narrowest road worth printing.</p>
       <p class="hint"><span id="kept-text"></span> <button id="kept-clear" class="suggest" type="button" hidden>Clear</button></p>
     </div>
   </section>

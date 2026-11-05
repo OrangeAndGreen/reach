@@ -3317,6 +3317,51 @@ function sideways(outline, y0, y1) {
   return tris;
 }
 
+// ---------- road width test ----------
+
+/**
+ * A small test print that measures the narrowest road that prints clean,
+ * rather than assuming it: a plate with one raised line for each road class
+ * in classes (ROAD_CLASSES by default), each as wide as that class's widthMm
+ * and raised its liftMm over the plate, as a road is on a print, lengthMm
+ * long. The lines lie side by side, narrowest at the front (y = 0 side), and
+ * raised dots on the plate left of each line count it: one dot for the
+ * narrowest, four for the widest of the four classes. A line that comes out
+ * broken or blobbed is a road class too narrow for the printer.
+ *
+ * Returns { solids, rungs, sizeMm } as bridgeLadder does: solids, each a
+ * closed solid as STL triangles that overlap where they join; rungs, each
+ * line's { cls, widthMm, liftMm, dots, x0, x1, y0, y1, topMm } (the line from
+ * x0 to x1 along and y0 to y1 across, its top at topMm); and sizeMm, the
+ * print's [x, y, z].
+ */
+export function roadLadder({ classes = ROAD_CLASSES, lengthMm = 30, plateMm = 1 } = {}) {
+  const margin = 2, gapY = 4, dot = 0.8, dotGap = 0.6, dotMm = 0.6, sink = 0.2;
+  const lines = Object.entries(classes).map(([cls, c]) => ({ cls, widthMm: c.widthMm, liftMm: c.liftMm }))
+    .sort((a, b) => a.widthMm - b.widthMm || a.liftMm - b.liftMm);
+  const dotsX = lines.length * dot + (lines.length - 1) * dotGap;
+  const x0 = margin + dotsX + margin, x1 = x0 + lengthMm;
+  const sizeX = x1 + margin;
+  // each line's row is at least a dot wide, so the dots beside a narrow line fit
+  const rowMm = (l) => Math.max(l.widthMm, dot);
+  const sizeY = 2 * margin + lines.reduce((s, l) => s + rowMm(l), 0) + (lines.length - 1) * gapY;
+  const solids = [box(0, 0, 0, sizeX, sizeY, plateMm)];
+  let y = margin;
+  const rungs = lines.map((l, k) => {
+    const row = rowMm(l), mid = y + row / 2;
+    const y0 = mid - l.widthMm / 2, y1 = mid + l.widthMm / 2, topMm = plateMm + l.liftMm;
+    solids.push(box(x0, y0, plateMm - sink, x1, y1, topMm));
+    for (let s = 0; s <= k; s++) {
+      const dx = margin + s * (dot + dotGap), dy = mid - dot / 2;
+      solids.push(box(dx, dy, plateMm - sink, dx + dot, dy + dot, plateMm + dotMm));
+    }
+    y += row + gapY;
+    return { ...l, dots: k + 1, x0, x1, y0, y1, topMm };
+  });
+  const top = Math.max(plateMm + dotMm, ...rungs.map((r) => r.topMm));
+  return { solids, rungs, sizeMm: [sizeX, sizeY, top] };
+}
+
 /**
  * Cuts the roads whose class's level in levels (a track: its own) is down into a millimetre grid
  * (row 0 north) as grooves: the grid points within half the road's width of
