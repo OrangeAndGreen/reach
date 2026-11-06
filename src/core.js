@@ -3089,9 +3089,10 @@ export function roadLines(osm, bounds, widthMm, { frame = null, pieces = null } 
 /** A bridge's deck, from its top down to its open underside (mm on the model). */
 export const BRIDGE_DECK_MM = 0.6;
 /**
- * The longest open span between piers (mm on the model). Not measured: a
- * guess at what a printer bridges cleanly without support. A longer crossing
- * stands on piers spaced evenly, no further apart than this.
+ * The longest open span between piers (mm on the model). Measured on
+ * 2026-11-06 with the bridge ladder in PLA without supports: 20 mm printed
+ * clean, 25 and 30 mm sagged. A longer crossing stands on piers spaced evenly,
+ * no further apart than this.
  */
 export const BRIDGE_SPAN_MM = 20;
 /** A pier's length along the road (mm on the model), filled down to the riverbed. */
