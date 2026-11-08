@@ -48,7 +48,7 @@ test('a print KML keeps each area of water, its rings in full and its level, and
     { name: 'Channel & basin', rings: [[[-71.0512345, 42.3512345], [-71.04, 42.35], [-71.04, 42.36]], [[-71.045, 42.352], [-71.042, 42.352], [-71.042, 42.355]]], levelMm: -0.6 },
     { name: 'Pond', rings: [[[-71.06, 42.35], [-71.055, 42.35], [-71.055, 42.355]]], levelMm: 1 },
   ];
-  const set = { sideKm: 2, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 3, baseMm: 3, seaFloorM: 0, depthStretch: 3, shoreMm: 0, shoreRidge: false, label: false, labelText: '', balance: false, infillPercent: 15, cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, waterMm: core.NO_WATER, cols: 2, rows: 1, tracks: [], waters, bins: [], binClearMm: 0.4 };
+  const set = { sideKm: 2, widthMm: 120, cells: 201, pitchMm: 0.6, exaggeration: 3, baseMm: 3, seaFloorM: 0, depthStretch: 3, shoreMm: 0, shoreRidge: false, label: false, labelText: '', balance: false, infillPercent: 15, cornerMm: 5, shape: 'square', aspect: 2, bearing: 0, buildings: false, buildingDefaultM: 7, roadMm: core.NO_ROADS, roadWidthMm: core.ROAD_WIDTHS, waterMm: core.NO_WATER, cols: 2, rows: 1, tracks: [], waters, bins: [], binClearMm: 0.4 };
   const text = core.printKml({ centre, set });
   assert.match(text, /<Style id="water">/);
   assert.match(text, /<Data name="waters">.*<value>2<\/value>/);
