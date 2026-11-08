@@ -333,6 +333,24 @@
             <input id="print-road-secondary" class="level" type="number" step="0.1" min="-10" max="10" value="0.4" title="mm: positive raises, negative sinks, 0 leaves it out">
           </div>
         </div>
+        <div id="print-road-widths" class="row" hidden>
+          <div class="field">
+            <label for="print-road-motorway-width">Motorway width, mm</label>
+            <input id="print-road-motorway-width" class="road-width" type="number" step="0.1" min="0.2" max="5" value="1.6" title="mm across on the model, 0.2 to 5">
+          </div>
+          <div class="field">
+            <label for="print-road-trunk-width">Trunk width, mm</label>
+            <input id="print-road-trunk-width" class="road-width" type="number" step="0.1" min="0.2" max="5" value="1.2" title="mm across on the model, 0.2 to 5">
+          </div>
+          <div class="field">
+            <label for="print-road-primary-width">Primary width, mm</label>
+            <input id="print-road-primary-width" class="road-width" type="number" step="0.1" min="0.2" max="5" value="0.8" title="mm across on the model, 0.2 to 5">
+          </div>
+          <div id="print-road-secondary-width-field" class="field">
+            <label for="print-road-secondary-width">Secondary width, mm</label>
+            <input id="print-road-secondary-width" class="road-width" type="number" step="0.1" min="0.2" max="5" value="0.6" title="mm across on the model, 0.2 to 5">
+          </div>
+        </div>
         <p id="print-roads-hint" class="hint" hidden></p>
         <div class="row">
           <div class="field">

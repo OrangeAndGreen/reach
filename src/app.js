@@ -792,6 +792,7 @@ function printSettings() {
     buildings: $('print-buildings').value === 'osm' && Number($('print-side').value) <= core.BUILDINGS_MAX_KM,
     buildingDefaultM: Number($('print-default').value),
     roadMm: roadSetting(),
+    roadWidthMm: roadWidthSetting(),
     waterMm: $('print-water').value === 'osm' && Number($('print-side').value) <= core.WATER_MAX_KM ? levelsOf('water', core.WATER_KINDS) : core.NO_WATER,
     tracks: state.tracks.filter((t) => t.lines && t.levelMm).map(({ name, lines, levelMm }) => ({ name, lines, levelMm })),
     waters: state.tracks.filter((t) => t.rings && t.levelMm).map(({ name, rings, levelMm }) => ({ name, rings, levelMm })),
@@ -822,6 +823,35 @@ function roadSetting() {
   const level = levelsOf('road', core.ROAD_CLASSES);
   if (mode !== 'secondary' || sideKm > core.SECONDARY_ROADS_MAX_KM) level.secondary = 0;
   return level;
+}
+
+/** The road width inputs as { class: mm }, each held to the bounds core.roadWidths sets. */
+function roadWidthSetting() {
+  return core.roadWidths(Object.fromEntries(Object.keys(core.ROAD_CLASSES).map((cls) => [cls, widthOf($(`print-road-${cls}-width`))])));
+}
+
+/** A road width input's mm on the model, or its last good value when what is typed isn't a number. */
+function widthOf(el) {
+  return core.parseRoadWidthMm(el.value) ?? Number(el.dataset.mm ?? core.ROAD_WIDTHS[el.id.split('-')[2]]);
+}
+
+/** Puts mm in a road width input, as the value it goes back to if what is typed next isn't a number. */
+function setWidth(el, mm) {
+  el.dataset.mm = String(mm);
+  el.value = String(mm);
+}
+
+/**
+ * Wires a road width input: on a change it is tidied to the mm it reads as,
+ * held to 0.2 to 5 mm, or put back to its last good value, then onChange runs.
+ */
+function widthInput(el, onChange) {
+  setWidth(el, widthOf(el));
+  el.addEventListener('change', () => {
+    const mm = el.validity.badInput ? null : core.parseRoadWidthMm(el.value);
+    setWidth(el, mm ?? Number(el.dataset.mm));
+    onChange();
+  });
 }
 
 /** The level inputs of roads or water (prefix), as { class or kind: mm }. */
@@ -1404,10 +1434,10 @@ async function buildModel() {
       }
       let ways = null, roadMask = null;
       if (roadReply) {
-        ways = core.roadLines(roadReply.osm, piece.frame.bounds, set.widthMm, { frame: piece.frame, pieces: outline?.pieces })
+        ways = core.roadLines(roadReply.osm, piece.frame.bounds, set.widthMm, { frame: piece.frame, pieces: outline?.pieces, widths: set.roadWidthMm })
           .filter(({ cls }) => set.roadMm[cls]);
         if (binClear.length) ways = core.linesClearOf(ways, binClear, 1);
-        const sunk = core.carveRoads(scaled.mm, ways, n, { ...pieceSet, ...scaled, levels: set.roadMm, skip: water?.areas, heights });
+        const sunk = core.carveRoads(scaled.mm, ways, n, { ...pieceSet, ...scaled, levels: set.roadMm, widths: set.roadWidthMm, skip: water?.areas, heights });
         scaled.mm = sunk.mm;
         roadMask = sunk.mask;
       }
@@ -1431,7 +1461,7 @@ async function buildModel() {
       }
       let roads = null;
       if (ways) {
-        const roadTris = core.roadTriangles(ways, scaled.mm, n, { ...pieceSet, ...scaled, levels: set.roadMm, water: water?.sunk });
+        const roadTris = core.roadTriangles(ways, scaled.mm, n, { ...pieceSet, ...scaled, levels: set.roadMm, widths: set.roadWidthMm, water: water?.sunk });
         for (const p of roadTris) extra.push(p);
         const km = {};
         for (const { cls, line } of ways) km[cls] = (km[cls] || 0) + core.lineLength(line) / scaled.mmPerMetre / 1000;
@@ -1726,23 +1756,27 @@ showBuildingControls();
 for (const el of document.querySelectorAll('#print-road-levels input.level, #print-water-levels input.level')) {
   levelInput(el, () => { showRoadControls(); showWaterControls(); buildModel(); });
 }
+// Each road class takes its width in mm on the model, starting at its ROAD_CLASSES width.
+for (const el of document.querySelectorAll('#print-road-widths input.road-width')) widthInput(el, () => { showRoadControls(); buildModel(); });
 function showRoadControls() {
   const sideKm = Number($('print-side').value);
   const fits = sideKm <= core.ROADS_MAX_KM;
   const mode = $('print-roads').value, wanted = mode !== 'none';
   const secondaryWanted = mode === 'secondary', secondaryFits = sideKm <= core.SECONDARY_ROADS_MAX_KM;
-  const c = core.ROAD_CLASSES, level = roadSetting();
+  const c = roadWidthSetting(), level = roadSetting();
   $('print-road-levels').hidden = !wanted || !fits;
+  $('print-road-widths').hidden = !wanted || !fits;
   $('print-road-secondary-field').hidden = !secondaryWanted || !secondaryFits;
+  $('print-road-secondary-width-field').hidden = !secondaryWanted || !secondaryFits;
   $('print-roads-hint').hidden = !wanted;
   const raised = Object.values(level).some((v) => v > 0), sunk = Object.values(level).some((v) => v < 0);
   const widths = secondaryWanted && secondaryFits
-    ? `Motorways, trunk, primary and secondary roads are ${c.motorway.widthMm}, ${c.trunk.widthMm}, ${c.primary.widthMm} and ${c.secondary.widthMm} mm wide`
-    : `Motorways, trunk and primary roads are ${c.motorway.widthMm}, ${c.trunk.widthMm} and ${c.primary.widthMm} mm wide`;
+    ? `Motorways, trunk, primary and secondary roads are ${c.motorway}, ${c.trunk}, ${c.primary} and ${c.secondary} mm wide`
+    : `Motorways, trunk and primary roads are ${c.motorway}, ${c.trunk} and ${c.primary} mm wide`;
   $('print-roads-hint').textContent = !fits
     ? `Roads need a print of ${core.ROADS_MAX_KM} km or less across, so this one has none.`
     : !raised && !sunk ? 'Every class is at 0, so the print has no roads. A positive level in mm raises a class, a negative one sinks it.'
-    : [`Each level is in mm: positive raises, negative sinks, 0 leaves the class out. ${widths}, each class at its own level over or under the ground along it, smoothed so it reads as graded.`,
+    : [`Each level is in mm: positive raises, negative sinks, 0 leaves the class out. ${widths} (each width ${core.ROAD_WIDTH_MIN_MM} to ${core.ROAD_WIDTH_MAX_MM} mm, wider on a print small enough for the real road to be), each class at its own level over or under the ground along it, smoothed so it reads as graded.`,
       secondaryWanted && !secondaryFits && `Secondary roads need a print of ${core.SECONDARY_ROADS_MAX_KM} km or less across, so this one has the main roads alone.`,
       raised && 'A raised road is its own solid standing on the ground.',
       sunk && 'A sunk road is a groove cut into the ground, which leaves the water it crosses alone.',
@@ -2348,8 +2382,9 @@ function buildingsText({ buildings: b, set }) {
 function roadsText({ roads: r, set }) {
   if (!r.count) return 'No road of the classes printed in OpenStreetMap here';
   const length = (km) => (state.units === 'imperial' ? `${(km / 1.609344).toFixed(1)} mi` : `${km.toFixed(1)} km`);
-  return Object.entries(core.ROAD_CLASSES).filter(([cls]) => r.km[cls])
-    .map(([cls, c]) => `${cls} ${length(r.km[cls])}, ${c.widthMm} mm wide, ${levelText(set.roadMm[cls]).toLowerCase()}`).join('; ');
+  const widths = core.roadWidths(set.roadWidthMm);
+  return Object.keys(core.ROAD_CLASSES).filter((cls) => r.km[cls])
+    .map((cls) => `${cls} ${length(r.km[cls])}, ${widths[cls]} mm wide, ${levelText(set.roadMm[cls]).toLowerCase()}`).join('; ');
 }
 
 function waterText(m) {
@@ -2558,6 +2593,7 @@ $('print-file').addEventListener('change', async () => {
   $('print-roads').value = !core.anyLevel(set.roadMm) ? 'none' : set.roadMm.secondary ? 'secondary' : 'osm';
   // a file without secondary roads leaves their input at its default, ready for when they're asked for
   if (core.anyLevel(set.roadMm)) for (const [cls, mm] of Object.entries(set.roadMm)) if (mm || cls !== 'secondary') setLevel($(`print-road-${cls}`), mm);
+  for (const [cls, mm] of Object.entries(core.roadWidths(set.roadWidthMm))) setWidth($(`print-road-${cls}-width`), mm);
   showRoadControls();
   $('print-water').value = core.anyLevel(set.waterMm) ? 'osm' : 'none';
   if (core.anyLevel(set.waterMm)) for (const [kind, mm] of Object.entries(set.waterMm)) setLevel($(`print-water-${kind}`), mm);

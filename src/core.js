@@ -1005,6 +1005,7 @@ export function printKml({ centre, set, model = null, stlFile = '', made = new D
     ['buildings', 'Buildings from OpenStreetMap (1 yes, 0 no)', set.buildings ? 1 : 0],
     ['buildingDefaultM', 'Building height where OSM has none (m)', set.buildingDefaultM ?? DEFAULT_BUILDING_M],
     ...Object.keys(ROAD_CLASSES).map((cls) => [`${cls}Mm`, `${cap(cls)} roads from OpenStreetMap (mm up, negative sunk, 0 for none)`, set.roadMm?.[cls] ?? 0]),
+    ...Object.entries(roadWidths(set.roadWidthMm)).map(([cls, mm]) => [`${cls}WidthMm`, `${cap(cls)} road width on the model (mm)`, mm]),
     ...Object.entries(WATER_KEYS).map(([kind, k]) => [k, `${WATER_KINDS[kind]} from OpenStreetMap (mm up, negative sunk, 0 for none)`, set.waterMm?.[kind] ?? 0]),
     ['tracks', 'Tracks of your own (each its own placemark, with its level in mm up, negative sunk)', set.tracks?.length ?? 0],
     ['waters', 'Water of your own (each its own placemark, with its level in mm up, negative sunk)', set.waters?.length ?? 0],
@@ -1213,6 +1214,9 @@ export function parsePrintKml(text) {
       // and from before secondary roads have none of those
       roadMm: Object.fromEntries(Object.keys(ROAD_CLASSES).map((cls) => [cls,
         values[`${cls}Mm`] != null ? num(`${cls}Mm`, -10, 10) : values.roads === '1' && MAIN_ROADS.includes(cls) ? ROAD_LEVELS[cls] : 0])),
+      // files from before road widths were typed have each class at its width in ROAD_CLASSES
+      roadWidthMm: Object.fromEntries(Object.keys(ROAD_CLASSES).map((cls) => [cls,
+        values[`${cls}WidthMm`] != null ? num(`${cls}WidthMm`, ROAD_WIDTH_MIN_MM, ROAD_WIDTH_MAX_MM) : ROAD_WIDTHS[cls]])),
       // files from before lakes and rivers have none, and from before a level for each kind have them all sunk one depth
       waterMm: Object.fromEntries(Object.entries(WATER_KEYS).map(([kind, k]) => [kind,
         values[k] != null ? num(k, -10, 10) : values.waterMm != null ? -num('waterMm', 0, 10) : 0])),
@@ -2982,6 +2986,42 @@ export function parseLevelMm(text) {
   const mm = Math.max(-LEVEL_MAX_MM, Math.min(LEVEL_MAX_MM, Math.round(Number(t) * 100) / 100));
   return mm || 0; // never -0
 }
+/**
+ * The narrowest and widest a road class can be typed (mm on the model). Not
+ * measured: under 0.2 mm is half a 0.4 mm nozzle's line, and past 5 mm a road
+ * is a wall across a small print.
+ */
+export const ROAD_WIDTH_MIN_MM = 0.2;
+export const ROAD_WIDTH_MAX_MM = 5;
+/** Each road class's width on the model by default (mm), from ROAD_CLASSES. */
+export const ROAD_WIDTHS = Object.fromEntries(Object.entries(ROAD_CLASSES).map(([cls, c]) => [cls, c.widthMm]));
+
+/**
+ * A road width typed in, as mm on the model: "0.6", "0.6 mm" and "0,6" all
+ * read; it is held between ROAD_WIDTH_MIN_MM and ROAD_WIDTH_MAX_MM and to
+ * 0.01 mm. null when the text is blank or isn't a number.
+ */
+export function parseRoadWidthMm(text) {
+  const t = String(text ?? '').trim().replace(/\s*mm$/i, '').replace(',', '.');
+  if (!/^\+?(\d+\.?\d*|\.\d+)$/.test(t)) return null;
+  return clampRoadWidth(Number(t));
+}
+
+/** A width held between ROAD_WIDTH_MIN_MM and ROAD_WIDTH_MAX_MM, to 0.01 mm. */
+const clampRoadWidth = (mm) => Math.max(ROAD_WIDTH_MIN_MM, Math.min(ROAD_WIDTH_MAX_MM, Math.round(mm * 100) / 100));
+
+/**
+ * Each road class's width on the model (mm), as { class: mm }: the class's
+ * own in widths when it is a finite number (not text), held between ROAD_WIDTH_MIN_MM
+ * and ROAD_WIDTH_MAX_MM, and its ROAD_CLASSES widthMm otherwise.
+ */
+export function roadWidths(widths = {}) {
+  return Object.fromEntries(Object.keys(ROAD_CLASSES).map((cls) => {
+    const mm = widths?.[cls];
+    return [cls, typeof mm === 'number' && Number.isFinite(mm) ? clampRoadWidth(mm) : ROAD_WIDTHS[cls]];
+  }));
+}
+
 /** Each road class's level by default (raised), and no roads at all. */
 export const ROAD_LEVELS = Object.fromEntries(Object.entries(ROAD_CLASSES).map(([cls, c]) => [cls, c.liftMm]));
 export const NO_ROADS = Object.fromEntries(Object.keys(ROAD_CLASSES).map((cls) => [cls, 0]));
@@ -3059,12 +3099,13 @@ export const lineLength = (line) => line.reduce((s, p, i) => (i ? s + Math.hypot
 /**
  * Motorway, trunk, primary and secondary roads from an Overpass reply, in model
  * millimetres (x east, y north, the square's south-west corner at 0,0) and
- * cut to the square, as { cls, line }. Ways of a class that meet end to end
+ * cut to the square, as { cls, line }; a run shorter than its class's width
+ * in widths (mm, ROAD_WIDTHS by default) is dropped. Ways of a class that meet end to end
  * are joined first, so a road is one solid rather than a string of them.
  * Tunnels and covered roads are left out; ramps (the _link classes) aren't
  * asked for. frame and pieces place and cut them as buildingFootprints does.
  */
-export function roadLines(osm, bounds, widthMm, { frame = null, pieces = null } = {}) {
+export function roadLines(osm, bounds, widthMm, { frame = null, pieces = null, widths = ROAD_WIDTHS } = {}) {
   const toMm = frame ? (g) => frame.toMm(g.lon, g.lat) : (g) => [((g.lon - bounds.west) / (bounds.east - bounds.west)) * widthMm,
     ((g.lat - bounds.south) / (bounds.north - bounds.south)) * widthMm];
   const clips = pieces || [[[0, 0], [widthMm, 0], [widthMm, widthMm], [0, widthMm]]];
@@ -3079,7 +3120,7 @@ export function roadLines(osm, bounds, widthMm, { frame = null, pieces = null } 
   for (const [cls, ways] of byClass) {
     for (const line of joinLines(ways)) {
       for (const clip of clips) {
-        for (const run of clipLine(line, clip)) if (lineLength(run) >= ROAD_CLASSES[cls].widthMm) out.push({ cls, line: run });
+        for (const run of clipLine(line, clip)) if (lineLength(run) >= (widths[cls] ?? ROAD_WIDTHS[cls])) out.push({ cls, line: run });
       }
     }
   }
@@ -3116,7 +3157,7 @@ export const PIER_MM = 1;
  * BRIDGE_SPAN_MM stands on piers (PIER_MM long, down to the bed) at most that
  * far apart. A crossing that runs off the print keeps its one bank's level.
  */
-export function roadTriangles(roads, zMm, n, { widthMm, mmPerMetre, levels = ROAD_LEVELS, water = null }) {
+export function roadTriangles(roads, zMm, n, { widthMm, mmPerMetre, levels = ROAD_LEVELS, widths = ROAD_WIDTHS, water = null }) {
   const step = widthMm / (n - 1);
   // the lowest and highest corner of the grid cell under a point: the terrain over the cell lies between
   const cellSpan = (x, y) => {
@@ -3129,7 +3170,7 @@ export function roadTriangles(roads, zMm, n, { widthMm, mmPerMetre, levels = ROA
   for (const way of roads) {
     const liftMm = wayLevel(way, levels);
     if (liftMm <= 0) continue;
-    const half = wayHalf(way, mmPerMetre);
+    const half = wayHalf(way, mmPerMetre, widths);
     const pts = roadPoints(way.line, step);
     const m = pts.length;
     if (m < 2) continue;
@@ -3172,11 +3213,15 @@ export function roadTriangles(roads, zMm, n, { widthMm, mmPerMetre, levels = ROA
 /** A way's level: its own levelMm (a track's), or its class's in levels. */
 const wayLevel = (way, levels) => way.levelMm ?? levels[way.cls] ?? 0;
 
-/** Half a way's width on the model: its own widthMm (a track's), or its class's, or the real carriageway where that is wider. */
-function wayHalf(way, mmPerMetre) {
+/**
+ * Half a way's width on the model: its own widthMm (a track's), or its
+ * class's in widths (ROAD_WIDTHS by default), or the real carriageway where
+ * that is wider.
+ */
+function wayHalf(way, mmPerMetre, widths = ROAD_WIDTHS) {
   if (way.widthMm) return way.widthMm / 2;
-  const { widthMm, widthM } = ROAD_CLASSES[way.cls];
-  return Math.max(widthMm, widthM * mmPerMetre) / 2;
+  const { widthM } = ROAD_CLASSES[way.cls];
+  return Math.max(widths[way.cls] ?? ROAD_WIDTHS[way.cls], widthM * mmPerMetre) / 2;
 }
 
 /** A road line's points at most step apart, keeping the line's own corners. */
@@ -3374,13 +3419,13 @@ export function roadLadder({ classes = ROAD_CLASSES, lengthMm = 30, plateMm = 1 
  * minMm of model under it. Returns { mm, mask }: the new grid and a Uint8Array
  * with a 1 for each point cut.
  */
-export function carveRoads(mm, roads, n, { widthMm, mmPerMetre, levels = ROAD_LEVELS, skip = null, heights = null, minMm = 0.6 }) {
+export function carveRoads(mm, roads, n, { widthMm, mmPerMetre, levels = ROAD_LEVELS, widths = ROAD_WIDTHS, skip = null, heights = null, minMm = 0.6 }) {
   const step = widthMm / (n - 1);
   const bed = new Float64Array(n * n).fill(Infinity);
   for (const way of roads) {
     const depthMm = -wayLevel(way, levels);
     if (depthMm <= 0) continue;
-    const half = wayHalf(way, mmPerMetre);
+    const half = wayHalf(way, mmPerMetre, widths);
     // half a grid step apart, so the nearest grid point moves at most one step each way between them
     const pts = roadPoints(way.line, step / 2);
     const smooth = roadGround(pts, mm, n, widthMm);
