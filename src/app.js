@@ -195,6 +195,10 @@ function setUnits(units) {
   for (const o of $('print-default').options) {
     o.textContent = `${o.textContent.split(' (')[0]} (${core.formatHeight(Number(o.value), units)})`;
   }
+  for (const o of $('print-candidate').options) {
+    const c = core.PRINT_CANDIDATES[o.value];
+    if (c) o.textContent = candidateLabel(c, units);
+  }
   renderHeight();
   renderDrive();
   renderPrintTable();
@@ -896,6 +900,7 @@ function shoreSetting(mm) {
 function setPrintCentre(place, fit = true) {
   state.print = place;
   $('print-fit-hint').hidden = true;
+  $('print-candidate-hint').hidden = true;
   saveSettings();
   drawPrintSquare(fit);
   buildModel();
@@ -2611,6 +2616,40 @@ $('print-file').addEventListener('change', async () => {
   status('print', `Opened ${file.name}. Building the same model.`);
 });
 
+// A candidate from the Print candidates list sets the centre and size (and the sea floor,
+// buildings and stretch it suits) as a search and a size would, then the menu goes back to its prompt.
+function candidateLabel(c, units) { return `${c.name}, ${core.formatSide(c.sideKm, units)}`; }
+$('print-candidate').append(
+  new Option('Pick one…', ''),
+  ...Object.entries(core.CANDIDATE_KINDS).map(([kind, label]) => {
+    const group = Object.assign(document.createElement('optgroup'), { label });
+    group.append(...Object.entries(core.PRINT_CANDIDATES).filter(([, c]) => c.kind === kind)
+      .map(([k, c]) => new Option(candidateLabel(c, state.units), k)));
+    return group;
+  }),
+);
+$('print-candidate').addEventListener('change', () => {
+  const el = $('print-candidate'), candidate = core.PRINT_CANDIDATES[el.value];
+  el.value = '';
+  if (!candidate) return;
+  const c = core.candidateSettings(candidate);
+  addSide(c.sideKm);
+  lastSide = $('print-side').value;
+  $('print-side-field').hidden = !$('print-side').selectedOptions[0].dataset.own;
+  $('print-side-hint').hidden = true;
+  choose('print-sea', c.seaFloorM, `Down to ${core.formatHeight(c.seaFloorM, state.units)}`);
+  showSeaControls();
+  $('print-buildings').value = c.buildings ? 'osm' : 'none';
+  showBuildingControls();
+  showRoadControls();
+  showWaterControls();
+  if (c.exaggeration != null) setStretch(c.exaggeration);
+  setPrintCentre(c.centre);
+  const extras = [c.seaFloorM && 'the sea floor to full depth', c.buildings && 'buildings', c.exaggeration != null && `stretch × ${c.exaggeration}`].filter(Boolean);
+  const hint = $('print-candidate-hint');
+  hint.textContent = `${candidate.note} Set to ${core.formatSide(c.sideKm, state.units)} across${extras.length ? `, with ${extras.join(' and ')}` : ''}.`;
+  hint.hidden = false;
+});
 
 // ---------- small helpers ----------
 

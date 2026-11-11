@@ -2255,6 +2255,73 @@ export function shapeMesh(zMm, shape, extra = [], label = null, open = null) {
   return { tris, top };
 }
 
+// ---------- print candidates ----------
+// Places worth printing, from the brain's Print candidates list (2026-10-17),
+// each at the size it suits, so trying one is a pick instead of a search and a size.
+
+/** What each kind of candidate shows off, in the order the menu groups them. */
+export const CANDIDATE_KINDS = { topo: 'Land', sea: 'Sea floor', buildings: 'Buildings' };
+
+/**
+ * Print candidates: a name, the centre (lat, lon), the size across in km and
+ * the kind. A sea candidate prints the sea floor to full depth, a buildings one
+ * raises OpenStreetMap's buildings (so it is BUILDINGS_MAX_KM or less), and a
+ * stretch, where given, is the height stretch the place suits best.
+ */
+export const PRINT_CANDIDATES = {
+  meteor: { name: 'Meteor Crater, AZ', lat: 35.0275, lon: -111.0225, sideKm: 2, kind: 'topo', note: 'A small, clean bowl, a test of zoom 14.' },
+  sthelens: { name: 'Mount St. Helens', lat: 46.1912, lon: -122.1944, sideKm: 20, kind: 'topo', note: 'Crater, dome and the blast valley.' },
+  yosemite: { name: 'Yosemite Valley', lat: 37.7390, lon: -119.5850, sideKm: 10, kind: 'topo', note: 'Sheer U-shaped walls, Half Dome, El Capitan.' },
+  zion: { name: 'Zion Canyon', lat: 37.2700, lon: -112.9480, sideKm: 10, kind: 'topo', note: 'A deep slot between flat mesas.' },
+  grandcanyon: { name: 'Grand Canyon Village', lat: 36.0900, lon: -112.1200, sideKm: 20, kind: 'topo', note: 'The canyon from the South Rim.' },
+  canyonlands: { name: 'Canyonlands, Island in the Sky', lat: 38.2700, lon: -109.8700, sideKm: 20, kind: 'topo', note: 'Green and Colorado confluence, nested canyons.' },
+  rainier: { name: 'Mount Rainier', lat: 46.8529, lon: -121.7604, sideKm: 40, kind: 'topo', note: 'A lone volcano about 3,000 m above its surroundings.' },
+  washington: { name: 'Mount Washington, New Hampshire', lat: 44.2706, lon: -71.3033, sideKm: 20, kind: 'topo', note: 'The Presidential Range, which ties to Boston on the Height tab.' },
+  matterhorn: { name: 'Matterhorn and Zermatt', lat: 45.9980, lon: 7.7050, sideKm: 20, kind: 'topo', note: 'The Matterhorn with Zermatt below it.' },
+  fuji: { name: 'Mount Fuji', lat: 35.3606, lon: 138.7274, sideKm: 40, kind: 'topo', stretch: 1, note: 'A near-perfect cone, best at stretch ×1.' },
+  ngorongoro: { name: 'Ngorongoro Crater', lat: -3.1800, lon: 35.5800, sideKm: 40, kind: 'topo', note: 'A huge flat-floored caldera.' },
+  everest: { name: 'Everest and the Khumbu', lat: 27.9881, lon: 86.9250, sideKm: 40, kind: 'topo', stretch: 1, note: 'Best without stretch.' },
+  monterey: { name: 'Monterey Canyon, CA', lat: 36.7800, lon: -122.0000, sideKm: 80, kind: 'sea', note: 'A Grand Canyon-sized gorge from the beach, NOAA data.' },
+  puget: { name: 'Puget Sound', lat: 47.6000, lon: -122.5000, sideKm: 80, kind: 'sea', note: 'Glacier-cut troughs between the Olympics and Cascades, NOAA data.' },
+  hudson: { name: 'Hudson Canyon, off New York', lat: 39.6000, lon: -72.5000, sideKm: 160, kind: 'sea', note: 'Cuts through the shelf edge.' },
+  hawaii: { name: 'Big Island of Hawaii', lat: 19.6000, lon: -155.5000, sideKm: 160, kind: 'sea', note: 'Mauna Kea about 10 km above the sea floor.' },
+  tongue: { name: 'Tongue of the Ocean, Bahamas', lat: 24.5000, lon: -77.3000, sideKm: 160, kind: 'sea', note: 'Very shallow banks dropping to 2 km.' },
+  tenerife: { name: 'Tenerife', lat: 28.2700, lon: -16.6000, sideKm: 80, kind: 'sea', note: 'Teide at 3.7 km beside sea 3 km deep.' },
+  kaikoura: { name: 'Kaikoura, NZ', lat: -42.3500, lon: 173.6500, sideKm: 40, kind: 'sea', note: 'A canyon within 1 km of shore, 2,600 m mountains behind.' },
+  cape: { name: 'Cape Peninsula and Table Mountain', lat: -34.1200, lon: 18.4800, sideKm: 40, kind: 'sea', note: 'With False Bay.' },
+  santorini: { name: 'Santorini', lat: 36.4000, lon: 25.4300, sideKm: 20, kind: 'sea', note: 'A flooded caldera, though the source data may be too coarse.' },
+  gibraltar: { name: 'Strait of Gibraltar', lat: 35.9500, lon: -5.6000, sideKm: 40, kind: 'sea', note: 'Two continents and the sill between them.' },
+  manhattan: { name: 'Lower Manhattan', lat: 40.7075, lon: -74.0110, sideKm: 1, kind: 'buildings', note: 'Checked as bare earth 2026-10-16.' },
+  billionaires: { name: "Billionaires' Row, NYC", lat: 40.7650, lon: -73.9780, sideKm: 1, kind: 'buildings', note: 'Super-thin towers beside the flat park.' },
+  chicago: { name: 'Chicago Loop', lat: 41.8800, lon: -87.6320, sideKm: 1, kind: 'buildings', note: 'Willis Tower, the river, good OSM heights.' },
+  sanfrancisco: { name: 'San Francisco, FiDi and Telegraph Hill', lat: 37.7985, lon: -122.4025, sideKm: 1, kind: 'buildings', note: 'Towers and a steep hill together.' },
+  pittsburgh: { name: 'Pittsburgh, Golden Triangle', lat: 40.4370, lon: -80.0060, sideKm: 1, kind: 'buildings', note: 'Three rivers and the Mt Washington bluff, likely the best terrain-plus-buildings combination.' },
+  seattle: { name: 'Seattle downtown', lat: 47.6060, lon: -122.3360, sideKm: 1, kind: 'buildings', note: 'Towers stepping up from the waterfront.' },
+  boston: { name: 'Boston, Financial District and Beacon Hill', lat: 42.3570, lon: -71.0630, sideKm: 1, kind: 'buildings', note: 'Towers beside the hill.' },
+  dubai: { name: 'Downtown Dubai', lat: 25.1972, lon: 55.2744, sideKm: 1, kind: 'buildings', note: 'The Burj Khalifa.' },
+  sunnyisles: { name: 'Sunny Isles, FL', lat: 25.9420, lon: -80.1210, sideKm: 1, kind: 'buildings', note: 'A wall of towers on a flat barrier island.' },
+};
+/** The sea floor a sea candidate prints down to: all the way, Print's "Full depth". */
+export const CANDIDATE_SEA_FLOOR_M = 11000;
+
+/**
+ * What picking a candidate sets on Print, as a search and a size would: the
+ * centre (a place, as a search result is), the size across, the sea floor
+ * (full depth for a sea candidate, cut at sea level otherwise) and buildings
+ * (on for a buildings candidate, off otherwise), and the height stretch where
+ * the candidate names one (null leaves the stretch as it is).
+ */
+export function candidateSettings(candidate) {
+  const { name, lat, lon, sideKm, kind } = candidate;
+  return {
+    centre: { name, lat, lon },
+    sideKm,
+    seaFloorM: kind === 'sea' ? CANDIDATE_SEA_FLOOR_M : 0,
+    buildings: kind === 'buildings',
+    exaggeration: candidate.stretch ?? null,
+  };
+}
+
 // ---------- bins ----------
 // Holes cut down into the top to stand things in (SD cards, batteries), each
 // with a flat floor and upright walls, deep enough to hold the thing while
